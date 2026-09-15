@@ -1,0 +1,107 @@
+# Quality and testing
+
+Use `uv` for dependency and environment management. Typical validation is:
+
+```bash
+uv sync
+uv run ruff format --check .
+uv run ruff check .
+uv run ty check
+uv run pytest
+uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+```
+
+Use `uv run ruff format .` to format; do not manually fight the formatter. Run
+all checks relevant to modified code and do not claim a check passed unless it
+was executed.
+
+The ordinary pytest run remains the fast correctness check. Before closing each
+implementation phase, run the coverage command separately, review statement and
+branch coverage plus the missing-line report, and record the result in the phase
+or pull-request summary. Coverage is an assessment tool, not a substitute for
+behavioral assertions. Do not introduce a repository-wide fail-under threshold
+until a justified baseline exists; add tests for relevant uncovered behavior or
+explain intentional exclusions.
+
+## Test requirements
+
+### Live Jira evidence and synthetic fixtures
+
+Before writing or accepting HTTP mocks for a Jira endpoint, run the relevant
+read-only requests against a dedicated non-production Jira Cloud test site. Base
+mock shapes, field presence, nullability, ordering, pagination, headers, and
+error mapping on responses observed from that server. Jira documentation is a
+useful design source, but it is not sufficient evidence for a mock because it
+may lag deployed behavior.
+
+Live verification is opt-in and uses credentials supplied at runtime; default
+tests remain fully offline. Never use a production tenant or store its
+credentials/data. Do not commit raw captured responses, even from the test
+tenant. Keep any temporary capture outside the repository, transform it into a
+synthetic fixture, review it for sensitive data, and delete the capture.
+
+Synthetic fixtures must preserve the observed structure and behavior while
+replacing every tenant-specific or personal value, including base URLs, cloud
+and account IDs, project/issue keys, names, emails, tokens/cursors, timestamps,
+free text/ADF, filenames, attachment metadata, and custom-field contents. Add a
+short fixture provenance note containing only the Jira Cloud endpoint, relevant
+non-secret request options, observation date, behavior represented, and the fact
+that all values were synthesized. Do not deliberately trigger unsafe or abusive
+failure scenarios on the live service; construct those synthetic failures from
+the closest safely observed response shape and documented status semantics.
+
+Mock the HTTP boundary. Cover authentication configuration, Jira error mapping,
+pagination across more than one page, default newest-first comments, ascending
+comments, `since` filtering and early stop, histories above 100 comments, empty
+results, attachment filename sanitization, rate limits, malformed Jira payloads,
+network failures, and timeouts. Integration tests must be opt-in and never use
+stored production credentials or data.
+
+For comment-related work, explicitly verify latest-first default ordering,
+deterministic ordering, explicit pagination, retrieval past 100 comments,
+`since` filtering and early termination, and absence of silent truncation.
+
+Contract tests must also verify:
+
+- Jira Cloud REST API v3 paths and Basic authentication from exactly
+  `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`;
+- `search_issues` defaults to `page_token=None`, `limit=20`, accepts `1..100`,
+  passes Jira's opaque cursor unchanged between pages, and returns an actionable
+  tool error for `limit=0` or another invalid value;
+- omitted `fields`, explicit replacement fields, and `fields=[]` for both issue
+  tools, with no implicit fields added;
+- comment/changelog responses contain exactly `start_at`, exact `total`, and
+  `items`, without `max_results`, `is_last`, or `next_start_at`;
+- search responses contain exactly `items` and nullable `next_page_token`, never
+  an approximate or synthesized `total`;
+- comments apply `since` before ordering and slicing, and metadata describes the
+  filtered collection;
+- comments and changelog treat `limit=0` as unbounded from `start_at`;
+- both sort directions across multiple Jira pages, including equal timestamps
+  resolved by Jira `id`;
+- newest-first changelog uses the end of Jira's oldest-first collection rather
+  than merely reversing its first page;
+- ADF-to-Markdown conversion, unsupported-node text fallback, and UTC timestamp
+  normalization from multiple explicit offsets;
+- absent fields are omitted, requested unknown/custom fields are retained, and
+  compact user objects contain no email, avatar, or `self` URL;
+- failures are MCP tool errors with cause and corrective guidance where known,
+  while logs and model-visible errors contain no URL, credential, header, raw
+  response body, or attachment content;
+- attachment paths use the attachment identifier, cannot traverse through
+  names or symlink/reparse points, replace atomically, remove `.part` files on
+  failure/cancellation, and are cleaned up at normal server shutdown.
+
+At the MCP boundary, use an in-process client to assert discovery advertises
+exactly the six public tools, including their descriptions, defaults, input
+schemas, output schemas, and read-only/idempotent annotations. Invoke every tool
+through that boundary. Add one stdio subprocess smoke test and verify the shared
+HTTP client and temporary cache each have one lifespan and close exactly once.
+
+## Definition of done
+
+Implementation matches the request; public schemas remain intentional; relevant
+edge cases are covered; formatting, linting, type checking, and tests pass; no
+sensitive data was introduced; fixtures trace to sanitized test-site evidence;
+coverage was reviewed and reported; and documentation changes with public
+behavior.
