@@ -1,0 +1,6 @@
+/.serena/
+/*.agents.md
+/.coverage
+/.coverage.*
+/coverage.xml
+/htmlcov/
