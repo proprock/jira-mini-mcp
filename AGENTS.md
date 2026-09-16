@@ -5,10 +5,20 @@ small, predictable, compact, and suitable for direct installation from GitHub.
 
 ## Always-applicable rules
 
-- The MVP supports Jira Cloud REST API v3 only. Jira access is read-only. Do
-  not add Server/Data Center compatibility, write operations, Confluence,
-  board, sprint, worklog, transition, or administration features without a
-  concrete agent use case.
+- The MVP supports Jira Cloud REST API v3 only. Do not add Server/Data Center
+  compatibility, Confluence, board, sprint, worklog, or administration
+  features without a concrete agent use case.
+- Read access is unrestricted within that scope. Write access is limited to
+  exactly three tools: `add_comment`, `transition_issue`, and `update_issue`
+  (PLAN.agents.md Phase 14). Every other write operation -- issue creation,
+  issue links, attachment upload, comment or issue deletion, worklogs,
+  administration -- needs a concrete agent use case and the user's explicit
+  approval. A write tool is a public API change: it gets a contract in
+  `PROJECT-CONTRACTS.md` before it is implemented.
+- Annotate every write tool so `READ_ONLY_MODE` can withhold it:
+  `readOnlyHint=False`, plus honest `destructiveHint` and `idempotentHint`
+  values. The gate filters on that annotation and never on tool names, so
+  operators can run the server with no state-changing tool registered.
 - Keep MCP tools orthogonal. Do not add aliases or mirror Jira REST endpoints.
 - Preserve published tool names, arguments, defaults, and response schemas
   unless a deliberate public API change is required.

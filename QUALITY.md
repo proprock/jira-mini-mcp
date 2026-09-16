@@ -40,6 +40,18 @@ credentials/data. Do not commit raw captured responses, even from the test
 tenant. Keep any temporary capture outside the repository, transform it into a
 synthetic fixture, review it for sensitive data, and delete the capture.
 
+Write endpoints cannot be observed read-only, so they follow a stricter form of
+the same rule. Exercise them only on the dedicated non-production test site,
+only against throwaway issues created for that purpose, and never on a tenant
+holding real work. Record the method, path, and request body you sent together
+with the status and response body observed: a write mock has to assert the
+request, not only the parsed result. Do not provoke write failures repeatedly
+against the live service. Construct a 400 on an invalid transition, a 403 on a
+missing permission, and every other failure shape from the closest safely
+observed response plus documented status semantics, and mark those fixtures as
+hand-authored rather than implying live provenance. Leave the test site in a
+state a later observation can reuse.
+
 Synthetic fixtures must preserve the observed structure and behavior while
 replacing every tenant-specific or personal value, including base URLs, cloud
 and account IDs, project/issue keys, names, emails, tokens/cursors, timestamps,
@@ -64,6 +76,21 @@ stored production credentials or data.
 For comment-related work, explicitly verify latest-first default ordering,
 deterministic ordering, explicit pagination, retrieval past 100 comments,
 `since` filtering and early termination, and absence of silent truncation.
+
+For write-tool work, explicitly verify:
+
+- the exact method, path, and JSON body sent, not only the parsed response;
+- Markdown bodies converted to a valid ADF document;
+- argument validation rejecting an empty or meaningless request before any HTTP
+  call is made;
+- a failed name-to-identifier resolution listing the valid alternatives instead
+  of guessing one;
+- that no retry, redirect, or error path can apply a non-idempotent write twice;
+- that a rejected field names the tool that does support it;
+- the full error mapping on a write path, including Jira's per-field 400 detail,
+  with no URL, credential, email, or raw body in the message;
+- that `READ_ONLY_MODE` withholds every write tool, asserted against a registry
+  that actually mixes read-only and write annotations.
 
 Contract tests must also verify:
 
