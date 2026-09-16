@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  quality:
+    name: Quality (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the minimum supported version (pyproject.toml
+        # requires-python); 3.13 is the current practical version.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: uv sync
+        run: uv sync
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ty check
+        run: uv run ty check
+
+      - name: pytest
+        run: uv run pytest
+
+      - name: pytest --cov
+        run: uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+
+  package:
+    name: Build and verify distribution
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+
+      - name: uv sync
+        run: uv sync
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify sdist installs cleanly and passes MCP discovery
+        run: |
+          python -m venv /tmp/verify-sdist
+          /tmp/verify-sdist/bin/pip install --quiet dist/*.tar.gz
+          /tmp/verify-sdist/bin/python scripts/verify_mcp_discovery.py /tmp/verify-sdist/bin/jira-mini-mcp
+
+      - name: Verify wheel installs cleanly and passes MCP discovery
+        run: |
+          python -m venv /tmp/verify-wheel
+          /tmp/verify-wheel/bin/pip install --quiet dist/*.whl
+          /tmp/verify-wheel/bin/python scripts/verify_mcp_discovery.py /tmp/verify-wheel/bin/jira-mini-mcp
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
