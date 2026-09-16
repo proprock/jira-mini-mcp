@@ -37,9 +37,10 @@ attach those same checked artifacts to the release. Test direct `uvx` execution
 from the repository and tag. Add PyPI Trusted Publishing only in a later,
 deliberate publication task, and prefer it over a long-lived API token.
 
-`.github/workflows/release.yml` automates this: on a pushed `v*` tag (or a
-manual `workflow_dispatch` run against an existing tag), it builds the sdist
-and wheel, verifies both install cleanly and pass MCP discovery, then
-publishes a GitHub Release for that tag and attaches those exact files using
-the run's built-in `GITHUB_TOKEN` — no manual download/attach step, no
-long-lived credential.
+`.github/workflows/release.yml` automates this: on a pushed `v*` tag, or a
+manual `workflow_dispatch` run (dispatched from a branch that already has
+this workflow file, passing the target tag as its `tag` input — needed for a
+tag pushed before this workflow existed), it builds the sdist and wheel,
+verifies both install cleanly and pass MCP discovery, then publishes a GitHub
+Release for that tag and attaches those exact files using the run's built-in
+`GITHUB_TOKEN` — no manual download/attach step, no long-lived credential.
