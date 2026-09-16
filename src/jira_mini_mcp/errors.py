@@ -6,7 +6,7 @@ exception types; `jira.py` calls it instead of reimplementing the mapping.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx2
@@ -87,6 +87,23 @@ class JiraServerError(JiraMiniError):
 
 class JiraNetworkError(JiraMiniError):
     """A network/transport failure occurred while contacting Jira."""
+
+
+class JiraIncompleteResponseError(JiraMiniError):
+    """Jira returned malformed known resources alongside useful clean data."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        problems: tuple[str, ...] = (),
+        partial_result: dict[str, Any] | None = None,
+        operation: str | None = None,
+        issue_key: str | None = None,
+    ) -> None:
+        super().__init__(message, operation=operation, issue_key=issue_key)
+        self.problems = problems
+        self.partial_result = partial_result or {}
 
 
 def _extract_jira_detail(response: httpx2.Response) -> str | None:

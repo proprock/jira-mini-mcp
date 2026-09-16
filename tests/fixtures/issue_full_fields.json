@@ -1,5 +1,5 @@
 {
-  "_provenance": "Hand-authored synthetic Jira Cloud v3 issue 'fields' object, not a live capture. Shape modeled on the documented get-issue response for the sixteen get_issue default fields, with all tenant/user/content values synthesized.",
+  "_provenance": "Known issuetype, status, priority, project, parent, subtasks, and issuelinks key shapes were observed through read-only Jira Cloud v3 GET /rest/api/3/issue/{key} responses on 2026-09-16; every value is synthetic and this is not a raw capture. The non-empty components value is explicitly hand-authored because no assigned component was available on the test site.",
   "fields": {
     "summary": "Fix login redirect loop",
     "description": {
@@ -16,18 +16,28 @@
       "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10001",
       "id": "10001",
       "name": "Bug",
+      "description": "A problem that impairs a product function",
+      "hierarchyLevel": 0,
+      "subtask": false,
       "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/bug.svg"
     },
     "status": {
       "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
       "id": "3",
       "name": "In Progress",
-      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+      "statusCategory": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/4",
+        "id": 4,
+        "key": "indeterminate",
+        "colorName": "yellow",
+        "name": "In Progress"
+      }
     },
     "priority": {
       "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/2",
       "id": "2",
-      "name": "High"
+      "name": "High",
+      "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/priorities/high.svg"
     },
     "assignee": {
       "accountId": "syn-acc-001",
@@ -43,43 +53,150 @@
       "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-002"
     },
     "labels": ["auth", "regression"],
-    "components": [{ "id": "10010", "name": "Backend" }],
+    "components": [
+      {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/component/10010",
+        "id": "10010",
+        "name": "Backend",
+        "description": "Server-side code"
+      }
+    ],
     "created": "2024-01-10T09:15:00.000-0500",
     "updated": "2024-01-15T14:30:00.000-0500",
     "resolutiondate": null,
-    "issuelinks": [],
-    "project": { "id": "10000", "key": "SYN", "name": "Synthetic Project" },
-    "parent": null,
-    "subtasks": []
+    "issuelinks": [
+      {
+        "id": "30001",
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issueLink/30001",
+        "type": {
+          "id": "10000",
+          "name": "Blocks",
+          "inward": "is blocked by",
+          "outward": "blocks",
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issueLinkType/10000"
+        },
+        "inwardIssue": {
+          "id": "11001",
+          "key": "SYN-41",
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/11001",
+          "fields": {
+            "summary": "Prepare identity provider migration",
+            "status": {
+              "id": "1",
+              "name": "To Do",
+              "statusCategory": { "key": "new", "name": "To Do" },
+              "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/1"
+            },
+            "issuetype": {
+              "id": "10004",
+              "name": "Task",
+              "hierarchyLevel": 0,
+              "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10004"
+            },
+            "priority": { "id": "3", "name": "Medium" },
+            "project": { "id": "10000", "key": "SYN", "name": "Synthetic Project" }
+          }
+        }
+      },
+      {
+        "id": "30002",
+        "type": {
+          "id": "10000",
+          "name": "Blocks",
+          "inward": "is blocked by",
+          "outward": "blocks"
+        },
+        "outwardIssue": {
+          "id": "11002",
+          "key": "SYN-42",
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/11002",
+          "fields": { "summary": "Remove legacy callback" }
+        }
+      }
+    ],
+    "project": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/project/10000",
+      "id": "10000",
+      "key": "SYN",
+      "name": "Synthetic Project",
+      "projectTypeKey": "software",
+      "simplified": true,
+      "avatarUrls": { "48x48": "https://synthetic-tenant.atlassian.net/project-avatar/10000" }
+    },
+    "parent": {
+      "id": "10900",
+      "key": "SYN-10",
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10900",
+      "fields": {
+        "summary": "Harden sign-in flow",
+        "status": {
+          "id": "3",
+          "name": "In Progress",
+          "statusCategory": { "key": "indeterminate" }
+        },
+        "issuetype": { "id": "10000", "name": "Epic", "hierarchyLevel": 1 },
+        "priority": { "id": "2", "name": "High" }
+      }
+    },
+    "subtasks": [
+      {
+        "id": "10901",
+        "key": "SYN-11",
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10901",
+        "fields": {
+          "summary": "Add redirect regression coverage",
+          "status": {
+            "id": "1",
+            "name": "To Do",
+            "statusCategory": { "key": "new" }
+          },
+          "issuetype": { "id": "10003", "name": "Sub-task", "hierarchyLevel": -1 },
+          "priority": { "id": "3", "name": "Medium" }
+        }
+      }
+    ]
   },
   "expected_normalized_fields": {
     "summary": "Fix login redirect loop",
     "description": "Users are redirected in a loop after SSO login.",
-    "issuetype": {
-      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10001",
-      "id": "10001",
-      "name": "Bug",
-      "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/bug.svg"
-    },
-    "status": {
-      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
-      "id": "3",
-      "name": "In Progress",
-      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
-    },
-    "priority": {
-      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/2",
-      "id": "2",
-      "name": "High"
-    },
+    "issuetype": { "id": "10001", "name": "Bug", "hierarchy_level": 0 },
+    "status": { "id": "3", "name": "In Progress", "category": "indeterminate" },
+    "priority": { "id": "2", "name": "High" },
     "assignee": { "account_id": "syn-acc-001", "display_name": "Jordan Lee" },
     "reporter": { "account_id": "syn-acc-002", "display_name": "Riley Chen" },
     "labels": ["auth", "regression"],
     "components": [{ "id": "10010", "name": "Backend" }],
     "created": "2024-01-10T14:15:00Z",
     "updated": "2024-01-15T19:30:00Z",
-    "issuelinks": [],
+    "issuelinks": [
+      {
+        "relationship": "is blocked by",
+        "issue": {
+          "key": "SYN-41",
+          "summary": "Prepare identity provider migration",
+          "status": { "id": "1", "name": "To Do", "category": "new" },
+          "issuetype": { "id": "10004", "name": "Task", "hierarchy_level": 0 }
+        }
+      },
+      {
+        "relationship": "blocks",
+        "issue": { "key": "SYN-42", "summary": "Remove legacy callback" }
+      }
+    ],
     "project": { "id": "10000", "key": "SYN", "name": "Synthetic Project" },
-    "subtasks": []
+    "parent": {
+      "key": "SYN-10",
+      "summary": "Harden sign-in flow",
+      "status": { "id": "3", "name": "In Progress", "category": "indeterminate" },
+      "issuetype": { "id": "10000", "name": "Epic", "hierarchy_level": 1 }
+    },
+    "subtasks": [
+      {
+        "key": "SYN-11",
+        "summary": "Add redirect regression coverage",
+        "status": { "id": "1", "name": "To Do", "category": "new" },
+        "issuetype": { "id": "10003", "name": "Sub-task", "hierarchy_level": -1 }
+      }
+    ]
   }
 }

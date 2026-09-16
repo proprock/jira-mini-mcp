@@ -1,9 +1,7 @@
 """Tests for jira_mini_mcp.models: dataclasses and value normalization.
 
-Fixtures under tests/fixtures/ are hand-authored synthetic JSON, not live
-Jira captures -- Phase 3 is pure data-shape/normalization logic and does
-not require live-Jira-derived evidence (that starts at Phase 4's HTTP
-interactions).
+Fixtures under tests/fixtures/ contain only synthetic data. Their provenance
+notes distinguish live-derived Jira Cloud shapes from hand-authored cases.
 """
 
 from __future__ import annotations
@@ -154,9 +152,57 @@ class TestNormalizeIssueFields:
         ):
             assert result[key] == expected[key]
 
-    def test_null_optional_fields_are_omitted_not_null(self) -> None:
+    def test_known_resources_have_exact_compact_shapes(self) -> None:
         fixture = _load("issue_full_fields.json")
         result = models.normalize_issue_fields(fixture["fields"])
+
+        assert result["issuetype"] == {
+            "id": "10001",
+            "name": "Bug",
+            "hierarchy_level": 0,
+        }
+        assert result["status"] == {
+            "id": "3",
+            "name": "In Progress",
+            "category": "indeterminate",
+        }
+        assert result["priority"] == {"id": "2", "name": "High"}
+        assert result["project"] == {
+            "id": "10000",
+            "key": "SYN",
+            "name": "Synthetic Project",
+        }
+        assert result["components"] == [{"id": "10010", "name": "Backend"}]
+
+    def test_parent_subtasks_and_links_share_compact_issue_reference(self) -> None:
+        fixture = _load("issue_full_fields.json")
+        result = models.normalize_issue_fields(fixture["fields"])
+        expected = fixture["expected_normalized_fields"]
+
+        assert result["parent"] == expected["parent"]
+        assert result["subtasks"] == expected["subtasks"]
+        assert result["issuelinks"] == expected["issuelinks"]
+        serialized = json.dumps({key: result[key] for key in ("parent", "subtasks", "issuelinks")})
+        for forbidden in ("self", "iconUrl", "description", "priority", "project"):
+            assert f'"{forbidden}"' not in serialized
+
+    def test_absent_optional_resource_values_are_omitted(self) -> None:
+        result = models.normalize_issue_fields(
+            {
+                "issuetype": {"id": "1", "name": "Task"},
+                "status": {"id": "2", "name": "Open"},
+                "parent": {"key": "SYN-1"},
+            }
+        )
+
+        assert result == {
+            "issuetype": {"id": "1", "name": "Task"},
+            "status": {"id": "2", "name": "Open"},
+            "parent": {"key": "SYN-1"},
+        }
+
+    def test_null_optional_fields_are_omitted_not_null(self) -> None:
+        result = models.normalize_issue_fields({"resolutiondate": None, "parent": None})
         assert "resolutiondate" not in result
         assert "parent" not in result
 
@@ -178,11 +224,147 @@ class TestNormalizeIssueFields:
         raw = {"labels": ["a", "b"]}
         assert models.normalize_issue_fields(raw) == {"labels": ["a", "b"]}
 
-    def test_malformed_user_field_is_skipped_not_crashed(self) -> None:
-        assert models.normalize_issue_fields({"assignee": "not-a-user-object"}) == {}
+    def test_malformed_user_field_reports_path_and_clean_partial_value(self) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields(
+                {"summary": "Still useful", "assignee": "not-a-user-object"}
+            )
 
-    def test_malformed_date_field_is_skipped_not_crashed(self) -> None:
-        assert models.normalize_issue_fields({"created": 12345}) == {}
+        assert exc_info.value.partial_value == {"summary": "Still useful"}
+        assert [problem.path for problem in exc_info.value.problems] == ["$.fields.assignee"]
+
+    def test_malformed_date_field_reports_path_and_clean_partial_value(self) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields({"summary": "Still useful", "created": 12345})
+
+        assert exc_info.value.partial_value == {"summary": "Still useful"}
+        assert [problem.path for problem in exc_info.value.problems] == ["$.fields.created"]
+
+    @pytest.mark.parametrize(
+        ("raw", "problem_path"),
+        [
+            ({"priority": "not-an-object"}, "$.fields.priority"),
+            (
+                {"issuetype": {"id": "1", "name": "Task", "hierarchyLevel": "zero"}},
+                "$.fields.issuetype.hierarchyLevel",
+            ),
+            (
+                {"status": {"id": "2", "name": "Open", "statusCategory": []}},
+                "$.fields.status.statusCategory",
+            ),
+            ({"assignee": {"accountId": "a1"}}, "$.fields.assignee.displayName"),
+            ({"parent": "not-an-object"}, "$.fields.parent"),
+            (
+                {"parent": {"key": "SYN-1", "fields": "not-an-object"}},
+                "$.fields.parent.fields",
+            ),
+            (
+                {"parent": {"key": "SYN-1", "fields": {"summary": 42}}},
+                "$.fields.parent.fields.summary",
+            ),
+            ({"components": "not-an-array"}, "$.fields.components"),
+            ({"issuelinks": ["not-an-object"]}, "$.fields.issuelinks[0]"),
+            (
+                {"issuelinks": [{"type": [], "inwardIssue": {"key": "SYN-1"}}]},
+                "$.fields.issuelinks[0].type",
+            ),
+            ({"created": "2024-01-01T00:00:00"}, "$.fields.created"),
+        ],
+    )
+    def test_malformed_known_value_reports_its_exact_path(
+        self, raw: dict, problem_path: str
+    ) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields(raw)
+
+        assert [problem.path for problem in exc_info.value.problems] == [problem_path]
+
+    def test_invalid_nested_resources_leave_a_clean_issue_reference(self) -> None:
+        raw = {
+            "parent": {
+                "key": "SYN-1",
+                "fields": {
+                    "summary": "Useful",
+                    "status": {"id": 2, "name": "Open"},
+                    "issuetype": "not-an-object",
+                },
+            }
+        }
+
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields(raw)
+
+        assert exc_info.value.partial_value == {"parent": {"key": "SYN-1", "summary": "Useful"}}
+        assert [problem.path for problem in exc_info.value.problems] == [
+            "$.fields.parent.fields.status.id",
+            "$.fields.parent.fields.issuetype",
+        ]
+
+    def test_multiple_malformed_resources_are_aggregated_with_exact_paths(self) -> None:
+        raw = {
+            "summary": "Keep me",
+            "issuetype": {"id": 10001, "name": "Bug", "self": "https://example.invalid"},
+            "status": {
+                "id": "3",
+                "name": "In Progress",
+                "statusCategory": {"key": 7, "self": "https://example.invalid"},
+            },
+            "components": [
+                {"id": "10", "name": "API", "self": "https://example.invalid"},
+                {"id": "11", "self": "https://example.invalid"},
+            ],
+        }
+
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields(raw)
+
+        assert exc_info.value.partial_value == {
+            "summary": "Keep me",
+            "status": {"id": "3", "name": "In Progress"},
+            "components": [{"id": "10", "name": "API"}],
+        }
+        assert [problem.path for problem in exc_info.value.problems] == [
+            "$.fields.issuetype.id",
+            "$.fields.status.statusCategory.key",
+            "$.fields.components[1].name",
+        ]
+        assert "example.invalid" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("link", "problem_path"),
+        [
+            (
+                {
+                    "type": {"inward": "is blocked by", "outward": "blocks"},
+                    "inwardIssue": {"key": "SYN-1"},
+                    "outwardIssue": {"key": "SYN-2"},
+                },
+                "$.fields.issuelinks[0]",
+            ),
+            (
+                {
+                    "type": {"inward": "is blocked by"},
+                    "outwardIssue": {"key": "SYN-2"},
+                },
+                "$.fields.issuelinks[0].type.outward",
+            ),
+            (
+                {
+                    "type": {"inward": "is blocked by"},
+                    "inwardIssue": {"id": "10001"},
+                },
+                "$.fields.issuelinks[0].inwardIssue.key",
+            ),
+        ],
+    )
+    def test_malformed_issue_link_requires_one_direction_relationship_and_issue_key(
+        self, link: dict, problem_path: str
+    ) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields({"summary": "Still useful", "issuelinks": [link]})
+
+        assert exc_info.value.partial_value == {"summary": "Still useful", "issuelinks": []}
+        assert [problem.path for problem in exc_info.value.problems] == [problem_path]
 
     def test_custom_field_list_is_recursively_normalized(self) -> None:
         raw = {"customfield_10050": ["2024-01-01T00:00:00Z", "plain"]}
