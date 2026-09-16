@@ -1,0 +1,23 @@
+{
+  "_provenance": "Hand-authored synthetic Jira Cloud v3 'fields' object, not a live capture. Exercises customfield_* passthrough plus the recursive ADF/timestamp normalization the contract requires even for unknown fields.",
+  "fields": {
+    "summary": "Custom field test",
+    "customfield_10010": "Plain custom text",
+    "customfield_10020": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        { "type": "paragraph", "content": [{ "type": "text", "text": "Rich text custom field." }] }
+      ]
+    },
+    "customfield_10030": "2024-02-01T00:00:00.000Z",
+    "customfield_10040": { "nested": { "value": "2024-03-01T12:00:00+02:00" } }
+  },
+  "expected_normalized_fields": {
+    "summary": "Custom field test",
+    "customfield_10010": "Plain custom text",
+    "customfield_10020": "Rich text custom field.",
+    "customfield_10030": "2024-02-01T00:00:00Z",
+    "customfield_10040": { "nested": { "value": "2024-03-01T10:00:00Z" } }
+  }
+}

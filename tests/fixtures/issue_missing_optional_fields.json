@@ -1,0 +1,10 @@
+{
+  "_provenance": "Hand-authored synthetic Jira Cloud v3 'fields' object, not a live capture. Models a caller-selected field subset (fields=[\"summary\",\"assignee\"]) where assignee is unset, to exercise omission of null values.",
+  "fields": {
+    "summary": "Just a title",
+    "assignee": null
+  },
+  "expected_normalized_fields": {
+    "summary": "Just a title"
+  }
+}
