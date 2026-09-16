@@ -55,6 +55,9 @@ suitable for direct installation from GitHub.
   assertions.
 - Use short-lived, focused branches for substantial features. Do not develop a
   substantial feature directly on `master`.
+- Record every externally observable change in `CHANGELOG.md` under
+  `## [Unreleased]`, in the same change that makes it. Tests, CI, refactors, and
+  documentation do not earn an entry; see `GIT-AND-RELEASES.md`.
 
 ## Read the applicable detail before changing behavior
 
@@ -65,7 +68,7 @@ suitable for direct installation from GitHub.
 - [QUALITY.md](QUALITY.md) — validation commands, test requirements, and the
   definition of done.
 - [GIT-AND-RELEASES.md](GIT-AND-RELEASES.md) — branches, commits, pull
-  requests, releases, and GitHub Actions.
+  requests, the changelog, releases, and GitHub Actions.
 - [AGENT-WORKFLOW.md](AGENT-WORKFLOW.md) — task routing, ownership,
   delegation, and development principles.
 

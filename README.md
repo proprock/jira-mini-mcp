@@ -326,7 +326,8 @@ knows nothing about MCP; the tools are thin adapters over it.
 ## Release model
 
 Semantic versioning, Conventional Commits, short-lived branches, pull-request CI,
-and tagged releases. `v0.1.0` is a GitHub Release with CI-checked wheel and source
+and tagged releases. [CHANGELOG.md](CHANGELOG.md) records what changed for
+someone running the server. `v0.1.0` is a GitHub Release with CI-checked wheel and source
 distributions attached. PyPI publication is a later step and should use GitHub
 Actions with Trusted Publishing rather than a long-lived credential.
 

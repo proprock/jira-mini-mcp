@@ -44,3 +44,34 @@ tag pushed before this workflow existed), it builds the sdist and wheel,
 verifies both install cleanly and pass MCP discovery, then publishes a GitHub
 Release for that tag and attaches those exact files using the run's built-in
 `GITHUB_TOKEN` — no manual download/attach step, no long-lived credential.
+
+## Changelog
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+It is written for someone who installs and runs the server, not for someone
+reading the diff, and the git history already records the diff.
+
+Add the entry in the same pull request as the change it describes, under
+`## [Unreleased]`. A changelog written at release time is written from memory.
+
+**What earns an entry:** anything a user of the server can observe — a tool
+added, removed, or renamed; a tool argument, default, or response schema
+changed; a configuration value added or its accepted values changed; error
+behavior a caller has to handle; and anything security-relevant, such as what
+can reach a log or a model-visible message.
+
+**What does not:** tests, fixtures, CI, refactors, dependency bumps,
+documentation, and internal helpers. A release whose every change is invisible
+from outside gets no entry, which is the correct outcome, not an oversight.
+
+Use the Keep a Changelog categories — `Added`, `Changed`, `Deprecated`,
+`Removed`, `Fixed`, `Security` — and name the tool or setting in the entry.
+"`transition_issue` resolves a target status name as well as a transition name"
+is an entry; "refactor the resolution helper" is not.
+
+**Releasing:** rename `[Unreleased]` to the new version with its date, add a
+fresh empty `[Unreleased]` above it, update the link definitions at the bottom,
+and bump `version` in `pyproject.toml` to match the tag. The Unreleased section
+decides the version: a new tool or setting is a minor bump, a fix alone is a
+patch. Before `1.0`, a breaking change to a published tool contract is also a
+minor bump, and it says so in the entry rather than relying on the number.
