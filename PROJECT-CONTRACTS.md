@@ -227,7 +227,7 @@ camelCase field name.
 
 ## Configuration
 
-The MVP has exactly three setup values:
+The MVP has exactly three required setup values:
 
 ```text
 JIRA_BASE_URL

@@ -21,8 +21,10 @@ small, predictable, compact, and suitable for direct installation from GitHub.
   not Jira's incidental upstream page order. Search follows Jira Cloud v3's
   cursor API and uses `items` plus `next_page_token`, without inventing an exact
   total.
-- Configuration consists of exactly `JIRA_BASE_URL`, `JIRA_EMAIL`, and
-  `JIRA_API_TOKEN` for the MVP. Do not add another setup parameter casually.
+- The mandatory part of configuration consists of exactly `JIRA_BASE_URL`,
+  `JIRA_EMAIL`, and `JIRA_API_TOKEN` for the MVP. Do not add another required
+  setup parameter casually. Optional parameters may be added only with the
+  user's explicit approval.
 - Never hardcode or log Jira URLs, credentials, authorization headers, OAuth
   secrets, cloud IDs, or attachment contents. Redact sensitive values in errors.
 - Make tool errors actionable: state the cause and, when known, how the caller
