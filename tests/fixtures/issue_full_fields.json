@@ -1,0 +1,85 @@
+{
+  "_provenance": "Hand-authored synthetic Jira Cloud v3 issue 'fields' object, not a live capture. Shape modeled on the documented get-issue response for the sixteen get_issue default fields, with all tenant/user/content values synthesized.",
+  "fields": {
+    "summary": "Fix login redirect loop",
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "Users are redirected in a loop after SSO login." }]
+        }
+      ]
+    },
+    "issuetype": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10001",
+      "id": "10001",
+      "name": "Bug",
+      "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/bug.svg"
+    },
+    "status": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
+      "id": "3",
+      "name": "In Progress",
+      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+    },
+    "priority": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/2",
+      "id": "2",
+      "name": "High"
+    },
+    "assignee": {
+      "accountId": "syn-acc-001",
+      "displayName": "Jordan Lee",
+      "emailAddress": "jordan.lee@example.invalid",
+      "avatarUrls": { "48x48": "https://synthetic-tenant.atlassian.net/avatar/1" },
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-001"
+    },
+    "reporter": {
+      "accountId": "syn-acc-002",
+      "displayName": "Riley Chen",
+      "emailAddress": "riley.chen@example.invalid",
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-002"
+    },
+    "labels": ["auth", "regression"],
+    "components": [{ "id": "10010", "name": "Backend" }],
+    "created": "2024-01-10T09:15:00.000-0500",
+    "updated": "2024-01-15T14:30:00.000-0500",
+    "resolutiondate": null,
+    "issuelinks": [],
+    "project": { "id": "10000", "key": "SYN", "name": "Synthetic Project" },
+    "parent": null,
+    "subtasks": []
+  },
+  "expected_normalized_fields": {
+    "summary": "Fix login redirect loop",
+    "description": "Users are redirected in a loop after SSO login.",
+    "issuetype": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10001",
+      "id": "10001",
+      "name": "Bug",
+      "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/bug.svg"
+    },
+    "status": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
+      "id": "3",
+      "name": "In Progress",
+      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+    },
+    "priority": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/2",
+      "id": "2",
+      "name": "High"
+    },
+    "assignee": { "account_id": "syn-acc-001", "display_name": "Jordan Lee" },
+    "reporter": { "account_id": "syn-acc-002", "display_name": "Riley Chen" },
+    "labels": ["auth", "regression"],
+    "components": [{ "id": "10010", "name": "Backend" }],
+    "created": "2024-01-10T14:15:00Z",
+    "updated": "2024-01-15T19:30:00Z",
+    "issuelinks": [],
+    "project": { "id": "10000", "key": "SYN", "name": "Synthetic Project" },
+    "subtasks": []
+  }
+}

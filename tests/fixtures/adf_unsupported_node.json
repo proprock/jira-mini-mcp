@@ -1,0 +1,20 @@
+{
+  "_provenance": "Hand-authored synthetic ADF sample, not a live capture. Uses a 'panel' node (not individually handled by the renderer) to exercise the recursively-extractable-text fallback for unsupported node types.",
+  "doc": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+      {
+        "type": "panel",
+        "attrs": { "panelType": "info" },
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "Heads up: rollout on Friday." }]
+          }
+        ]
+      }
+    ]
+  },
+  "expected_markdown": "Heads up: rollout on Friday."
+}

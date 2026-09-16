@@ -1,0 +1,81 @@
+{
+  "_provenance": "Hand-authored synthetic ADF sample, not a live capture. Modeled on the documented Jira Cloud v3 Atlassian Document Format node shapes to exercise the renderer's full node coverage.",
+  "doc": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+      {
+        "type": "heading",
+        "attrs": { "level": 2 },
+        "content": [{ "type": "text", "text": "Summary" }]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "text": "This is " },
+          { "type": "text", "text": "bold", "marks": [{ "type": "strong" }] },
+          { "type": "text", "text": " and " },
+          { "type": "text", "text": "italic", "marks": [{ "type": "em" }] },
+          { "type": "text", "text": " and " },
+          { "type": "text", "text": "code", "marks": [{ "type": "code" }] },
+          { "type": "text", "text": "." }
+        ]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "text", "text": "See " },
+          {
+            "type": "text",
+            "text": "docs",
+            "marks": [{ "type": "link", "attrs": { "href": "https://example.invalid/docs" } }]
+          },
+          { "type": "hardBreak" },
+          { "type": "text", "text": "next line" }
+        ]
+      },
+      {
+        "type": "bulletList",
+        "content": [
+          {
+            "type": "listItem",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "item one" }] }]
+          },
+          {
+            "type": "listItem",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "item two" }] }]
+          }
+        ]
+      },
+      {
+        "type": "orderedList",
+        "content": [
+          {
+            "type": "listItem",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "step one" }] }]
+          },
+          {
+            "type": "listItem",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "step two" }] }]
+          }
+        ]
+      },
+      {
+        "type": "blockquote",
+        "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "quoted text" }] }]
+      },
+      {
+        "type": "codeBlock",
+        "attrs": { "language": "python" },
+        "content": [{ "type": "text", "text": "print(1)" }]
+      },
+      {
+        "type": "paragraph",
+        "content": [
+          { "type": "mention", "attrs": { "id": "synthetic-account-1", "text": "@Jordan Lee" } }
+        ]
+      }
+    ]
+  },
+  "expected_markdown": "## Summary\n\nThis is **bold** and *italic* and `code`.\n\nSee [docs](https://example.invalid/docs)\nnext line\n\n- item one\n- item two\n\n1. step one\n2. step two\n\n> quoted text\n\n```python\nprint(1)\n```\n\n@Jordan Lee"
+}
