@@ -308,6 +308,184 @@ class TestNormalizeAttachment:
         assert [str(p) for p in problems] == ["$.attachment[0]: expected an object"]
 
 
+class TestNormalizeChangelogChange:
+    def _raw(self, **overrides: object) -> dict:
+        base = {
+            "field": "status",
+            "fieldtype": "jira",
+            "fieldId": "status",
+            "from": "10000",
+            "fromString": "To Do",
+            "to": "10001",
+            "toString": "In Progress",
+        }
+        base.update(overrides)
+        return base
+
+    def test_standard_field_change_normalizes_without_field_id(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        change = models.normalize_changelog_change(self._raw(), "$.items[0]", problems)
+        assert problems == []
+        assert change == models.ChangelogChange(
+            field="status", from_="To Do", to="In Progress", field_id=None
+        )
+
+    def test_custom_field_change_keeps_field_id(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(
+            field="Sprint",
+            fieldtype="custom",
+            fieldId="customfield_10020",
+            **{"from": "", "fromString": "", "to": "213", "toString": "Sprint 12"},
+        )
+        change = models.normalize_changelog_change(raw, "$.items[0]", problems)
+        assert problems == []
+        assert change == models.ChangelogChange(
+            field="Sprint", from_="", to="Sprint 12", field_id="customfield_10020"
+        )
+
+    def test_custom_field_without_field_id_key_omits_field_id(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(field="Some Custom Field", fieldtype="custom")
+        del raw["fieldId"]
+        change = models.normalize_changelog_change(raw, "$.items[0]", problems)
+        assert problems == []
+        assert change is not None
+        assert change.field_id is None
+
+    def test_missing_field_id_on_standard_change_is_tolerated(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(field="Link", to="SYN-9", toString="This issue relates to SYN-9")
+        del raw["fieldId"]
+        change = models.normalize_changelog_change(raw, "$.items[0]", problems)
+        assert problems == []
+        assert change is not None
+        assert change.field_id is None
+
+    def test_null_from_string_becomes_none(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(field="Attachment", fieldId="attachment")
+        raw["from"] = None
+        raw["fromString"] = None
+        change = models.normalize_changelog_change(raw, "$.items[0]", problems)
+        assert problems == []
+        assert change is not None
+        assert change.from_ is None
+
+    def test_non_string_to_string_becomes_none_not_a_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(toString=12345)
+        change = models.normalize_changelog_change(raw, "$.items[0]", problems)
+        assert problems == []
+        assert change is not None
+        assert change.to is None
+
+    def test_missing_field_drops_change_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        change = models.normalize_changelog_change(self._raw(field=None), "$.items[0]", problems)
+        assert change is None
+        assert any(p.path == "$.items[0].field" for p in problems)
+
+    def test_non_object_raw_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        change = models.normalize_changelog_change("not-an-object", "$.items[0]", problems)
+        assert change is None
+        assert [str(p) for p in problems] == ["$.items[0]: expected an object"]
+
+
+class TestNormalizeChangelogEntry:
+    def _raw(self, **overrides: object) -> dict:
+        base = {
+            "id": "50101",
+            "author": {"accountId": "syn-acc-301", "displayName": "Jordan Lee"},
+            "created": "2025-08-26T09:55:40.906-04:00",
+            "items": [
+                {
+                    "field": "status",
+                    "fieldtype": "jira",
+                    "fieldId": "status",
+                    "from": "10000",
+                    "fromString": "To Do",
+                    "to": "10001",
+                    "toString": "In Progress",
+                }
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_minimal_entry_normalizes(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(self._raw(), "$.items[0]", problems)
+        assert problems == []
+        assert entry == models.ChangelogEntry(
+            id="50101",
+            author=models.User(account_id="syn-acc-301", display_name="Jordan Lee"),
+            created="2025-08-26T13:55:40Z",
+            changes=[
+                models.ChangelogChange(
+                    field="status", from_="To Do", to="In Progress", field_id=None
+                )
+            ],
+        )
+
+    def test_minimal_keys_entry_with_empty_items_normalizes(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(self._raw(items=[]), "$.items[0]", problems)
+        assert problems == []
+        assert entry is not None
+        assert entry.changes == []
+
+    def test_missing_id_drops_entry_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(self._raw(id=None), "$.items[0]", problems)
+        assert entry is None
+        assert any(p.path == "$.items[0].id" for p in problems)
+
+    def test_missing_author_drops_entry_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(self._raw(author=None), "$.items[0]", problems)
+        assert entry is None
+        assert any(p.path == "$.items[0].author" for p in problems)
+
+    def test_malformed_created_drops_entry_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(
+            self._raw(created="not-a-timestamp"), "$.items[0]", problems
+        )
+        assert entry is None
+        assert any(p.path == "$.items[0].created" for p in problems)
+
+    def test_non_list_items_records_problem_but_keeps_entry(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry(
+            self._raw(items="not-a-list"), "$.items[0]", problems
+        )
+        assert entry is not None
+        assert entry.changes == []
+        assert any(p.path == "$.items[0].items" for p in problems)
+
+    def test_malformed_change_item_dropped_without_losing_entry_or_siblings(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(
+            items=[
+                {"field": "status", "toString": "In Progress"},
+                "not-an-object",
+                {"field": "priority", "toString": "Highest"},
+            ]
+        )
+        entry = models.normalize_changelog_entry(raw, "$.items[0]", problems)
+        assert entry is not None
+        assert [c.field for c in entry.changes] == ["status", "priority"]
+        assert any(p.path == "$.items[0].items[1]" for p in problems)
+
+    def test_non_object_raw_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        entry = models.normalize_changelog_entry("not-an-object", "$.items[0]", problems)
+        assert entry is None
+        assert [str(p) for p in problems] == ["$.items[0]: expected an object"]
+
+
 class TestAdfToMarkdown:
     def test_full_node_coverage(self) -> None:
         fixture = _load("adf_node_coverage.json")

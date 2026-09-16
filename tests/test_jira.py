@@ -1,12 +1,13 @@
 """Tests for jira_mini_mcp.jira: JiraClient core, search_issues, get_issue,
-get_comments, get_attachments, download_attachment.
+get_comments, get_attachments, download_attachment, get_changelog.
 
 Fixtures under tests/fixtures/jira_*.json trace to live, read-only requests
 against a Jira Cloud test site on 2026-09-16 (GET /rest/api/3/search/jql,
 GET /rest/api/3/issue/{key}, GET /rest/api/3/issue/{key}/comment,
-GET /rest/api/3/issue/{key}?fields=attachment, and
-GET /rest/api/3/attachment/{id}), with every tenant/account/content value
-replaced by synthetic data. See each fixture's `_provenance` note.
+GET /rest/api/3/issue/{key}?fields=attachment,
+GET /rest/api/3/attachment/{id}, and GET /rest/api/3/issue/{key}/changelog),
+with every tenant/account/content value replaced by synthetic data. See each
+fixture's `_provenance` note.
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ import pytest
 from jira_mini_mcp import errors, jira
 from jira_mini_mcp.auth import BasicTokenAuth
 from jira_mini_mcp.jira import JiraClient
-from jira_mini_mcp.models import IssueDetail, IssueSummary, Page, SearchPage, User
+from jira_mini_mcp.models import (
+    ChangelogChange,
+    IssueDetail,
+    IssueSummary,
+    Page,
+    SearchPage,
+    User,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE_URL = "https://synthetic-tenant.atlassian.net"
@@ -941,6 +949,437 @@ class TestGetComments:
         client = _make_client(handler)
         with pytest.raises(errors.JiraValidationError) as exc_info:
             await client.get_comments("SYN-1", **kwargs)
+        assert message_fragment in str(exc_info.value)
+
+
+def _synthetic_changelog_entry(
+    index: int, created: str, entry_id: str | None = None
+) -> dict[str, Any]:
+    return {
+        "id": entry_id or str(50000 + index),
+        "author": {"accountId": f"syn-acc-{index}", "displayName": f"User {index}"},
+        "created": created,
+        "items": [
+            {
+                "field": "status",
+                "fieldtype": "jira",
+                "fieldId": "status",
+                "from": "10000",
+                "fromString": "To Do",
+                "to": "10001",
+                "toString": f"Status {index}",
+            }
+        ],
+    }
+
+
+def _changelog_backend_handler(
+    raw_entries: list[dict[str, Any]],
+) -> tuple[Handler, list[httpx2.Request]]:
+    """A stateful fake mirroring the live-observed changelog endpoint: always
+    oldest-first (no orderBy support), startAt/maxResults index that fixed
+    ascending collection directly, and -- observed live 2026-09-16 -- `total`
+    reports the real collection size only while startAt does not exceed it;
+    once startAt overshoots, Jira echoes back total == startAt instead of the
+    real count.
+    """
+    seen: list[httpx2.Request] = []
+    real_total = len(raw_entries)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        params = request.url.params
+        start_at = int(params["startAt"])
+        max_results = int(params["maxResults"])
+        ordered = sorted(raw_entries, key=lambda e: (e["created"], e["id"]))
+        page = ordered[start_at : start_at + max_results]
+        reported_total = real_total if start_at <= real_total else start_at
+        return _json_response(
+            200,
+            {
+                "startAt": start_at,
+                "maxResults": max_results,
+                "total": reported_total,
+                "isLast": start_at + len(page) >= real_total,
+                "values": page,
+            },
+        )
+
+    return handler, seen
+
+
+class TestGetChangelog:
+    async def test_uses_v3_changelog_path(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(
+                200, {"startAt": 0, "maxResults": 1, "total": 0, "isLast": True, "values": []}
+            )
+        )
+        client = _make_client(handler)
+
+        await client.get_changelog("SYN-1")
+
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/rest/api/3/issue/SYN-1/changelog"
+
+    async def test_no_orderby_param_is_sent(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(
+                200, {"startAt": 0, "maxResults": 1, "total": 0, "isLast": True, "values": []}
+            )
+        )
+        client = _make_client(handler)
+
+        await client.get_changelog("SYN-1")
+
+        assert "orderBy" not in seen[0].url.params
+
+    async def test_full_response_shape_and_normalization(self) -> None:
+        fixture = _load("jira_changelog_page.json")
+        handler, _ = _recording_handler(_json_response(200, fixture))
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-301", limit=0, order="asc")
+
+        assert isinstance(result, Page)
+        assert result.start_at == 0
+        assert result.total == 3
+        assert [e.id for e in result.items] == ["50101", "50102", "50103"]
+
+        first = result.items[0]
+        assert first.author == User(account_id="syn-acc-301", display_name="Jordan Lee")
+        assert first.created == "2025-08-26T13:55:40Z"
+        assert first.changes == [
+            ChangelogChange(field="status", from_="To Do", to="In Progress", field_id=None)
+        ]
+
+        second = result.items[1]
+        assert second.changes == [
+            ChangelogChange(field="Attachment", from_=None, to="diagnostics.log", field_id=None),
+            ChangelogChange(
+                field="Sprint", from_="", to="Sprint 12 (8/27 - 9/10)", field_id="customfield_10020"
+            ),
+        ]
+
+        third = result.items[2]
+        assert third.changes == [
+            ChangelogChange(
+                field="Link", from_=None, to="This issue relates to SYN-9", field_id=None
+            )
+        ]
+
+    async def test_default_order_is_newest_first(self) -> None:
+        fixture = _load("jira_changelog_page.json")
+        handler, _ = _recording_handler(_json_response(200, fixture))
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-301")
+
+        assert [e.id for e in result.items] == ["50103", "50102", "50101"]
+
+    async def test_ascending_and_descending_orders(self) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 6)]
+
+        desc_handler, _ = _changelog_backend_handler(raw)
+        desc_result = await _make_client(desc_handler).get_changelog("SYN-1", order="desc")
+        assert [e.id for e in desc_result.items] == ["50005", "50004", "50003", "50002", "50001"]
+
+        asc_handler, _ = _changelog_backend_handler(raw)
+        asc_result = await _make_client(asc_handler).get_changelog("SYN-1", order="asc")
+        assert [e.id for e in asc_result.items] == ["50001", "50002", "50003", "50004", "50005"]
+
+    async def test_nonzero_start_at_offsets_the_logical_collection(self) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=2, limit=2, order="asc"
+        )
+
+        assert result.start_at == 2
+        assert result.total == 5
+        assert [e.id for e in result.items] == ["50003", "50004"]
+
+    async def test_nonzero_start_at_offsets_descending_collection(self) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=1, limit=2, order="desc"
+        )
+
+        assert result.start_at == 1
+        assert result.total == 5
+        assert [e.id for e in result.items] == ["50004", "50003"]
+
+    async def test_equal_timestamps_ordered_by_id(self) -> None:
+        raw = [
+            _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z", entry_id="20"),
+            _synthetic_changelog_entry(2, "2025-01-01T00:00:00Z", entry_id="10"),
+            _synthetic_changelog_entry(3, "2025-01-01T00:00:00Z", entry_id="30"),
+        ]
+        handler, _ = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog("SYN-1", order="asc")
+
+        assert [e.id for e in result.items] == ["10", "20", "30"]
+
+    async def test_limit_zero_returns_every_remaining_item(self) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=1, limit=0, order="asc"
+        )
+
+        assert result.total == 5
+        assert [e.id for e in result.items] == ["50002", "50003", "50004", "50005"]
+
+    async def test_limit_zero_descending_returns_every_older_item(self) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=1, limit=0, order="desc"
+        )
+
+        assert result.total == 5
+        assert [e.id for e in result.items] == ["50004", "50003", "50002", "50001"]
+
+    async def test_reachable_beyond_100_entries_over_successive_calls(self) -> None:
+        raw = [
+            _synthetic_changelog_entry(i, f"2025-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}T00:00:00Z")
+            for i in range(150)
+        ]
+        handler, seen = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=0, limit=0, order="asc"
+        )
+
+        assert result.total == 150
+        assert len(result.items) == 150
+        assert len(seen) >= 2  # jira.CHANGELOG_PAGE_SIZE (100) forces a second call
+
+    async def test_multi_page_fetch_with_shrunk_page_size(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "CHANGELOG_PAGE_SIZE", 2)
+        raw = [_synthetic_changelog_entry(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, seen = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog("SYN-1", limit=0, order="asc")
+
+        assert [e.id for e in result.items] == ["50001", "50002", "50003", "50004", "50005"]
+        assert len(seen) == 4  # 1 (discovery) + 2 + 2 + 1
+
+    async def test_short_page_mid_range_stops_fetching_early(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A page shorter than requested, other than at the range boundary,
+        stops the fetch loop immediately instead of retrying -- the same
+        defensive stance `get_comments` takes for a collection that changed
+        between calls.
+        """
+        monkeypatch.setattr(jira, "CHANGELOG_PAGE_SIZE", 2)
+        entries = [_synthetic_changelog_entry(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 3)]
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            start_at = int(request.url.params["startAt"])
+            max_results = int(request.url.params["maxResults"])
+            if start_at == 0 and max_results == 1:
+                return _json_response(
+                    200,
+                    {
+                        "startAt": 0,
+                        "maxResults": 1,
+                        "total": 5,
+                        "isLast": False,
+                        "values": entries[:1],
+                    },
+                )
+            page = entries[start_at : start_at + max_results]
+            return _json_response(
+                200,
+                {
+                    "startAt": start_at,
+                    "maxResults": max_results,
+                    "total": 5,
+                    "isLast": True,
+                    "values": page,
+                },
+            )
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=0, limit=0, order="asc"
+        )
+
+        assert result.total == 5
+        assert [e.id for e in result.items] == ["50001", "50002"]
+
+    async def test_total_stays_correct_despite_upstream_corruption_beyond_real_total(
+        self,
+    ) -> None:
+        raw = [_synthetic_changelog_entry(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 4)]
+        handler, seen = _changelog_backend_handler(raw)
+
+        result = await _make_client(handler).get_changelog(
+            "SYN-1", start_at=0, limit=20, order="desc"
+        )
+
+        assert result.total == 3
+        assert [e.id for e in result.items] == ["50003", "50002", "50001"]
+        # confirms the discovery call never probes past the real total
+        assert all(int(r.url.params["startAt"]) <= 3 for r in seen)
+
+    async def test_empty_changelog(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(
+                200, {"startAt": 0, "maxResults": 1, "total": 0, "isLast": True, "values": []}
+            )
+        )
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-1")
+
+        assert result == Page(start_at=0, total=0, items=[])
+
+    async def test_start_beyond_total_returns_empty_items_with_one_call(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(
+                200, {"startAt": 0, "maxResults": 1, "total": 5, "isLast": False, "values": []}
+            )
+        )
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-1", start_at=50)
+
+        assert result == Page(start_at=50, total=5, items=[])
+        assert len(seen) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"startAt": 0, "maxResults": 1, "values": []},
+            {"startAt": 0, "maxResults": 1, "total": "5", "values": []},
+            {"startAt": 0, "maxResults": 1, "total": 5, "values": "not-a-list"},
+            [],
+        ],
+    )
+    async def test_malformed_envelope_raises_server_error(self, body: Any) -> None:
+        handler, _ = _recording_handler(_json_response(200, body))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_changelog("SYN-1")
+
+    async def test_sort_key_drops_missing_or_malformed_created_without_crashing(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 3,
+            "isLast": True,
+            "values": [
+                _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z"),
+                {**_synthetic_changelog_entry(2, ""), "created": None},
+                {**_synthetic_changelog_entry(3, ""), "created": "not-a-timestamp"},
+            ],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_changelog("SYN-1", order="asc")
+
+        assert len(exc_info.value.problems) == 2
+        assert [e["id"] for e in exc_info.value.partial_result["items"]] == ["50001"]
+
+    async def test_sort_key_treats_non_dict_item_as_unsortable(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 2,
+            "isLast": True,
+            "values": ["not-an-object", _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z")],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_changelog("SYN-1", order="asc")
+
+        assert [e["id"] for e in exc_info.value.partial_result["items"]] == ["50001"]
+
+    async def test_malformed_resource_raises_with_sanitized_partial_page(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 2,
+            "isLast": True,
+            "values": [
+                _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z"),
+                {"id": "50002", "author": None, "created": "2025-01-02T00:00:00Z", "items": []},
+            ],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_changelog("SYN-1", order="asc")
+
+        assert exc_info.value.problems == ("$.items[1].author: expected an object",)
+        assert exc_info.value.partial_result["total"] == 2
+        assert [e["id"] for e in exc_info.value.partial_result["items"]] == ["50001"]
+
+    async def test_not_found_raises_with_issue_key(self) -> None:
+        fixture = _load("jira_issue_not_found.json")
+        handler, _ = _recording_handler(_json_response(404, fixture))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError) as exc_info:
+            await client.get_changelog("SYN-404")
+
+        assert exc_info.value.issue_key == "SYN-404"
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("status", "exc_class"),
+        [
+            (401, errors.JiraAuthenticationError),
+            (403, errors.JiraPermissionError),
+            (404, errors.JiraNotFoundError),
+            (429, errors.JiraRateLimitError),
+            (500, errors.JiraServerError),
+        ],
+    )
+    async def test_error_status_codes_map_to_expected_exception(
+        self, status: int, exc_class: type[Exception]
+    ) -> None:
+        handler, _ = _recording_handler(
+            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(exc_class):
+            await client.get_changelog("SYN-1")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message_fragment"),
+        [
+            ({"start_at": -1}, "non-negative"),
+            ({"limit": -1}, "non-negative"),
+            ({"order": "newest"}, "'asc' or 'desc'"),
+        ],
+    )
+    async def test_invalid_arguments_raise_without_http_call(
+        self, kwargs: dict[str, Any], message_fragment: str
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError("no HTTP call should be made for invalid arguments")
+
+        client = _make_client(handler)
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.get_changelog("SYN-1", **kwargs)
         assert message_fragment in str(exc_info.value)
 
 

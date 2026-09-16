@@ -1,0 +1,89 @@
+{
+  "_provenance": "Envelope and history-item shape observed live 2026-09-16 against GET /rest/api/3/issue/{key}/changelog on a Jira Cloud test site (907 real changelog entries on the observed issue). Confirmed: the collection is always oldest-first with no orderBy support (an orderBy param sent to this endpoint is silently ignored); startAt/maxResults index that fixed ascending collection directly; total is only trustworthy while the requested startAt does not exceed it -- once startAt overshoots the real total, Jira echoes back total == startAt instead of the real count. A history item's `from`/`to` carry Jira's internal option/user/version IDs -- sometimes null or empty even when a human-readable value exists via fromString/toString (e.g. a Story point estimate change had to: null, toString: \"5\"; a first Sprint assignment had from: \"\", fromString: \"\"). A standard-field item's own fieldId (e.g. status) adds nothing field doesn't already say, and some standard-field items (e.g. an issue-link change with field \"Link\") omit fieldId entirely; a custom field always carries fieldtype: \"custom\" and a fieldId like customfield_10020. All tenant, account, and content values below are synthesized.",
+  "startAt": 0,
+  "maxResults": 100,
+  "total": 3,
+  "isLast": true,
+  "values": [
+    {
+      "id": "50101",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-26T09:55:40.906-0400",
+      "items": [
+        {
+          "field": "status",
+          "fieldtype": "jira",
+          "fieldId": "status",
+          "from": "10000",
+          "fromString": "To Do",
+          "to": "10001",
+          "toString": "In Progress"
+        }
+      ]
+    },
+    {
+      "id": "50102",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-302",
+        "accountId": "syn-acc-302",
+        "emailAddress": "alex.kim@example.invalid",
+        "displayName": "Alex Kim",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-27T09:55:40.906-0400",
+      "items": [
+        {
+          "field": "Attachment",
+          "fieldtype": "jira",
+          "fieldId": "attachment",
+          "from": null,
+          "fromString": null,
+          "to": "38764",
+          "toString": "diagnostics.log"
+        },
+        {
+          "field": "Sprint",
+          "fieldtype": "custom",
+          "fieldId": "customfield_10020",
+          "from": "",
+          "fromString": "",
+          "to": "213",
+          "toString": "Sprint 12 (8/27 - 9/10)"
+        }
+      ]
+    },
+    {
+      "id": "50103",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-28T09:55:40.906-0400",
+      "items": [
+        {
+          "field": "Link",
+          "fieldtype": "jira",
+          "from": null,
+          "fromString": null,
+          "to": "SYN-9",
+          "toString": "This issue relates to SYN-9"
+        }
+      ]
+    }
+  ]
+}

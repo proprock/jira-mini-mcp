@@ -595,6 +595,93 @@ def normalize_attachment(
     )
 
 
+def normalize_changelog_change(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> ChangelogChange | None:
+    """Normalize one raw Jira changelog history item.
+
+    Jira's raw `from`/`to` carry internal option/user/version IDs -- often
+    null even when a human-readable value exists (observed live 2026-09-16,
+    e.g. a story-point change with `to: null, toString: "5"`) -- so this
+    project only ever surfaces `fromString`/`toString`, never the internal
+    IDs, and treats a missing or non-string one as "no value" rather than a
+    normalization problem. `field_id` is surfaced only for a custom field
+    (`fieldtype: "custom"`, `fieldId` like `customfield_10020`); a standard
+    field's own `fieldId` (e.g. `status`) adds nothing `field` doesn't
+    already say, and some standard-field items omit `fieldId` entirely.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    field_name = _required_string(raw, "field", path, problems)
+    if field_name is None:
+        return None
+
+    from_raw = raw.get("fromString")
+    from_value = from_raw if isinstance(from_raw, str) else None
+
+    to_raw = raw.get("toString")
+    to_value = to_raw if isinstance(to_raw, str) else None
+
+    field_id: str | None = None
+    if raw.get("fieldtype") == "custom":
+        raw_field_id = raw.get("fieldId")
+        if isinstance(raw_field_id, str) and raw_field_id:
+            field_id = raw_field_id
+
+    return ChangelogChange(field=field_name, from_=from_value, to=to_value, field_id=field_id)
+
+
+def normalize_changelog_entry(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> ChangelogEntry | None:
+    """Normalize one raw Jira changelog history entry; return None if a
+    required part is unusable.
+
+    `id`, `created`, and `author` are required, mirroring
+    `normalize_comment`'s requirements. A malformed individual change item
+    is dropped and reported on its own path; it never drops the whole entry,
+    since sibling changes in the same history record remain valid.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    entry_id = _required_string(raw, "id", path, problems)
+
+    created_raw = raw.get("created")
+    created: str | None = None
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            created = to_utc_iso(created_raw)
+        except ValueError:
+            _add_problem(
+                problems,
+                f"{path}.created",
+                "expected an ISO-8601 timestamp with an explicit offset",
+            )
+    else:
+        _add_problem(problems, f"{path}.created", "expected a non-empty string")
+
+    author = _normalize_user(raw.get("author"), f"{path}.author", problems)
+
+    if entry_id is None or created is None or author is None:
+        return None
+
+    raw_items = raw.get("items", [])
+    changes: list[ChangelogChange] = []
+    if not isinstance(raw_items, list):
+        _add_problem(problems, f"{path}.items", "expected a list")
+    else:
+        for index, raw_change in enumerate(raw_items):
+            change = normalize_changelog_change(raw_change, f"{path}.items[{index}]", problems)
+            if change is not None:
+                changes.append(change)
+
+    return ChangelogEntry(id=entry_id, author=author, created=created, changes=changes)
+
+
 def normalize_issue_fields(raw_fields: dict[str, Any], *, path: str = "$.fields") -> dict[str, Any]:
     """Normalize a raw Jira `fields` object into its compact response form.
 
