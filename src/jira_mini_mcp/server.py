@@ -35,7 +35,12 @@ from mcp.types import ToolAnnotations
 
 from jira_mini_mcp import errors
 from jira_mini_mcp.auth import BasicTokenAuth, load_config_from_env, load_read_only_mode
-from jira_mini_mcp.jira import ISSUE_DEFAULT_FIELDS, SEARCH_DEFAULT_FIELDS, JiraClient
+from jira_mini_mcp.jira import (
+    HTTP_TIMEOUT,
+    ISSUE_DEFAULT_FIELDS,
+    SEARCH_DEFAULT_FIELDS,
+    JiraClient,
+)
 from jira_mini_mcp.models import (
     Attachment,
     ChangelogChange,
@@ -105,7 +110,7 @@ async def app_lifespan(server: MCPServer[AppContext]) -> AsyncIterator[AppContex
     auth = BasicTokenAuth(config.email, config.api_token)
     cache_dir = Path(tempfile.mkdtemp(prefix="jira-mini-mcp-"))
     try:
-        async with httpx2.AsyncClient() as http_client:
+        async with httpx2.AsyncClient(timeout=HTTP_TIMEOUT) as http_client:
             jira_client = JiraClient(http_client, auth, config.base_url, cache_dir)
             yield AppContext(jira_client=jira_client)
     finally:

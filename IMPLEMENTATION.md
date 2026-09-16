@@ -39,6 +39,20 @@ MCP tools -> JiraClient -> shared httpx2.AsyncClient -> Jira REST API
 
 `JiraClient` must not depend on MCP internals; MCP tools are thin adapters.
 
+Give that client an explicit timeout rather than the library default, so a
+stalled Jira cannot hold a tool call open indefinitely.
+
+Retry inside the one request helper, never around it, and keep the policy small
+enough to state in a sentence: at most three attempts, with a short fixed
+backoff table instead of computed delays. Retry a 429 for any method, because
+Jira refusing to process a request means nothing was applied. Retry a 5xx or a
+transport failure only for methods that converge when replayed, currently GET
+and PUT; a POST is never replayed, since the failure may have arrived after
+Jira created the comment or ran the transition. Honour `Retry-After` while the
+wait is short, and when Jira asks for longer, report the rate limit with that
+value instead of holding the call open. When attempts run out, raise the error
+the last response maps to, unchanged.
+
 ## Configuration, authentication, and errors
 
 Load exactly `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` from the
@@ -46,6 +60,10 @@ environment supplied by the MCP host. Keep them in one immutable configuration
 object, validate all three at startup, and use Jira Cloud Basic authentication.
 The base URL is configuration, not part of the authentication provider's return
 value. Do not expose additional public settings for the attachment cache.
+
+Keep the tenant URL out of every log, including a library's. `httpx2` logs each
+request line at INFO, so the process entry point raises that logger's level
+before serving.
 
 Translate Jira and HTTP failures into concise actionable MCP errors. Preserve
 HTTP status, Jira error code, issue key, and operation where useful, but never

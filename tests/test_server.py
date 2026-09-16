@@ -29,7 +29,7 @@ from mcp.types import TextContent, ToolAnnotations
 from jira_mini_mcp import errors
 from jira_mini_mcp import server as server_module
 from jira_mini_mcp.auth import BasicTokenAuth, ConfigError
-from jira_mini_mcp.jira import JiraClient
+from jira_mini_mcp.jira import HTTP_TIMEOUT, JiraClient
 from jira_mini_mcp.models import (
     Attachment,
     ChangelogChange,
@@ -1240,3 +1240,31 @@ class TestRequestLogRedaction:
         capsys.readouterr()
 
         assert logging.getLogger("httpx2").level == logging.WARNING
+
+
+class TestHttpTimeout:
+    async def test_the_shared_client_is_built_with_an_explicit_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without this the library default applies, and a stalled Jira
+        holds the agent for as long as it takes."""
+        monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+
+        timeouts: list[Any] = []
+        original_init = httpx2.AsyncClient.__init__
+
+        def spy_init(self: httpx2.AsyncClient, *args: Any, **kwargs: Any) -> None:
+            original_init(self, *args, **kwargs)
+            timeouts.append(kwargs.get("timeout"))
+
+        monkeypatch.setattr(httpx2.AsyncClient, "__init__", spy_init)
+
+        async with Client(create_server()) as client:
+            await client.list_tools()
+
+        assert timeouts == [HTTP_TIMEOUT]
+        assert HTTP_TIMEOUT.connect == 10.0
+        assert HTTP_TIMEOUT.read == 30.0

@@ -138,7 +138,7 @@ def _extract_jira_detail(response: httpx2.Response) -> str | None:
     return _URL_PATTERN.sub("[link removed]", "; ".join(parts))
 
 
-def _parse_retry_after(response: httpx2.Response) -> float | None:
+def retry_after_seconds(response: httpx2.Response) -> float | None:
     value = response.headers.get("Retry-After")
     if value is None:
         return None
@@ -186,7 +186,7 @@ def raise_for_response(
         )
 
     if status == 429:
-        retry_after = _parse_retry_after(response)
+        retry_after = retry_after_seconds(response)
         message = f"Jira rate-limited operation '{operation}'."
         message = (
             f"{message} Retry after {retry_after:.0f} seconds."

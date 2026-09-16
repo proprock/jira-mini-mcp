@@ -69,6 +69,23 @@ def _recording_handler(response: httpx2.Response) -> tuple[Handler, list[httpx2.
     return handler, seen
 
 
+@pytest.fixture(autouse=True)
+def no_real_sleeping(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record backoff waits instead of taking them.
+
+    Autouse because every test that provokes a retriable failure would
+    otherwise pay the real delay; tests that assert on the schedule take
+    this fixture by name.
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(jira, "_sleep", fake_sleep)
+    return slept
+
+
 class TestPrivateRequestHelper:
     async def test_attaches_basic_auth_header(self) -> None:
         handler, seen = _recording_handler(_json_response(200, {"issues": [], "isLast": True}))
@@ -2365,3 +2382,218 @@ class TestWriteErrorMappingAndRedaction:
         with pytest.raises(errors.JiraServerError):
             await client.add_comment("SYN-1", "text")
         assert len(seen) == 1
+
+
+def _sequence_handler(
+    responses: list[httpx2.Response | Exception],
+) -> tuple[Handler, list[httpx2.Request]]:
+    """Answer each call with the next scripted response, or raise it."""
+    seen: list[httpx2.Request] = []
+    remaining = list(responses)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if not remaining:
+            raise AssertionError(f"unscripted request #{len(seen)}")
+        answer = remaining.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    return handler, seen
+
+
+_SEARCH_OK = {"issues": [], "isLast": True}
+_CREATED_COMMENT_PATH = "/rest/api/3/issue/SYN-1/comment"
+
+
+class TestRetryPolicy:
+    """Three attempts at most, and a POST is replayed only when Jira has
+    said it did not process it."""
+
+    async def test_rate_limit_then_success(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler(
+            [_json_response(429, {}), _json_response(200, _SEARCH_OK)]
+        )
+        client = _make_client(handler)
+
+        await client.search_issues("project = SYN")
+
+        assert len(seen) == 2
+        assert no_real_sleeping == [0.5]
+
+    async def test_retry_after_header_sets_the_wait(self, no_real_sleeping: list[float]) -> None:
+        handler, _ = _sequence_handler(
+            [
+                httpx2.Response(429, json={}, headers={"Retry-After": "2"}),
+                _json_response(200, _SEARCH_OK),
+            ]
+        )
+        client = _make_client(handler)
+
+        await client.search_issues("project = SYN")
+
+        assert no_real_sleeping == [2.0]
+
+    async def test_backoff_grows_between_attempts(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler(
+            [_json_response(429, {}), _json_response(429, {}), _json_response(200, _SEARCH_OK)]
+        )
+        client = _make_client(handler)
+
+        await client.search_issues("project = SYN")
+
+        assert len(seen) == 3
+        assert no_real_sleeping == [0.5, 1.0]
+
+    async def test_gives_up_with_the_original_error(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler([_json_response(429, {})] * 3)
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraRateLimitError) as exc_info:
+            await client.search_issues("project = SYN")
+
+        assert len(seen) == 3
+        assert no_real_sleeping == [0.5, 1.0]
+        assert exc_info.value.status_code == 429
+
+    async def test_a_long_retry_after_is_reported_not_waited_out(
+        self, no_real_sleeping: list[float]
+    ) -> None:
+        # Holding a tool call open for five minutes is worse than telling
+        # the caller how long Jira wants.
+        handler, seen = _sequence_handler(
+            [httpx2.Response(429, json={}, headers={"Retry-After": "300"})]
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraRateLimitError) as exc_info:
+            await client.search_issues("project = SYN")
+
+        assert len(seen) == 1
+        assert no_real_sleeping == []
+        assert exc_info.value.retry_after == 300.0
+
+    async def test_server_error_is_retried_for_a_get(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler(
+            [_json_response(503, {}), _json_response(200, _SEARCH_OK)]
+        )
+        client = _make_client(handler)
+
+        await client.search_issues("project = SYN")
+
+        assert len(seen) == 2
+
+    async def test_server_error_is_retried_for_a_put(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler([_json_response(503, {}), httpx2.Response(204)])
+        client = _make_client(handler)
+
+        await client.update_issue("SYN-1", {"summary": "x"})
+
+        assert len(seen) == 2
+
+    async def test_server_error_is_never_retried_for_a_post(
+        self, no_real_sleeping: list[float]
+    ) -> None:
+        # A 5xx may mean the comment landed; a replay would post it twice.
+        handler, seen = _sequence_handler([_json_response(503, {})])
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.add_comment("SYN-1", "text")
+
+        assert len(seen) == 1
+        assert no_real_sleeping == []
+
+    async def test_rate_limit_is_retried_even_for_a_post(
+        self, no_real_sleeping: list[float]
+    ) -> None:
+        # Jira refused to process it, so nothing can have been applied.
+        handler, seen = _sequence_handler(
+            [_json_response(429, {}), _json_response(201, _load("jira_comment_created.json"))]
+        )
+        client = _make_client(handler)
+
+        comment = await client.add_comment("SYN-1", "text")
+
+        assert len(seen) == 2
+        assert [request.url.path for request in seen] == [_CREATED_COMMENT_PATH] * 2
+        assert comment.id == "144916"
+
+    async def test_transport_failure_is_retried_for_a_get_only(
+        self, no_real_sleeping: list[float]
+    ) -> None:
+        handler, seen = _sequence_handler(
+            [httpx2.ConnectError("refused"), _json_response(200, _SEARCH_OK)]
+        )
+        client = _make_client(handler)
+        await client.search_issues("project = SYN")
+        assert len(seen) == 2
+
+        handler, seen = _sequence_handler([httpx2.ConnectError("refused")])
+        client = _make_client(handler)
+        with pytest.raises(errors.JiraNetworkError):
+            await client.add_comment("SYN-1", "text")
+        assert len(seen) == 1
+
+    async def test_timeout_is_retried_for_a_get_only(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler(
+            [httpx2.ReadTimeout("slow"), _json_response(200, _SEARCH_OK)]
+        )
+        client = _make_client(handler)
+        await client.search_issues("project = SYN")
+        assert len(seen) == 2
+
+        handler, seen = _sequence_handler([httpx2.ReadTimeout("slow")])
+        client = _make_client(handler)
+        with pytest.raises(errors.JiraTimeoutError):
+            await client.add_comment("SYN-1", "text")
+        assert len(seen) == 1
+
+    async def test_repeated_transport_failure_gives_up(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler([httpx2.ConnectError("refused")] * 3)
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNetworkError):
+            await client.search_issues("project = SYN")
+
+        assert len(seen) == 3
+        assert no_real_sleeping == [0.5, 1.0]
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 409])
+    async def test_client_errors_are_not_retried(
+        self, status: int, no_real_sleeping: list[float]
+    ) -> None:
+        handler, seen = _sequence_handler([_json_response(status, {"errorMessages": ["no"]})])
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraMiniError):
+            await client.search_issues("project = SYN")
+
+        assert len(seen) == 1
+        assert no_real_sleeping == []
+
+    async def test_a_successful_write_is_sent_once(self, no_real_sleeping: list[float]) -> None:
+        handler, seen = _sequence_handler([_json_response(201, _load("jira_comment_created.json"))])
+        client = _make_client(handler)
+
+        await client.add_comment("SYN-1", "text")
+
+        assert len(seen) == 1
+        assert no_real_sleeping == []
+
+
+class TestBackoffSleep:
+    async def test_sleep_actually_waits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The indirection every other test patches out still does its job."""
+        waited: list[float] = []
+
+        async def fake_asyncio_sleep(seconds: float) -> None:
+            waited.append(seconds)
+
+        monkeypatch.undo()
+        monkeypatch.setattr(asyncio, "sleep", fake_asyncio_sleep)
+
+        await jira._sleep(0.25)
+
+        assert waited == [0.25]
