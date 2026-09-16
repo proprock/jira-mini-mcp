@@ -1,0 +1,85 @@
+{
+  "_about": "Tool-selection cases for evals/run_eval.py. Each prompt is phrased the way a developer would actually put it, never using the tool's own name, so the model has to choose from the descriptions alone. The pairs that can be confused are covered deliberately: comment vs field update, transition vs update, recent discussion vs history, listing an attachment vs fetching it.",
+  "scenarios": [
+    {
+      "id": "search-by-criteria",
+      "prompt": "Which open bugs in the PLATFORM project are assigned to me right now?",
+      "expect": {"tool": "search_issues", "has_arguments": ["jql"]}
+    },
+    {
+      "id": "read-one-ticket",
+      "prompt": "I'm picking up ABC-123. What is it about and what state is it in?",
+      "expect": {"tool": "get_issue", "arguments": {"issue_key": "ABC-123"}}
+    },
+    {
+      "id": "recent-discussion",
+      "prompt": "Catch me up on the last few things people said on ABC-123.",
+      "expect": {"tool": "get_comments", "arguments": {"issue_key": "ABC-123"}}
+    },
+    {
+      "id": "discussion-since-an-event",
+      "prompt": "We deployed on 2026-09-01T00:00:00Z. What has been said on ABC-123 since then?",
+      "expect": {"tool": "get_comments", "has_arguments": ["since"]}
+    },
+    {
+      "id": "whole-discussion",
+      "prompt": "I need every single comment on ABC-123, all of them, not just a page.",
+      "expect": {"tool": "get_comments", "arguments": {"limit": 0}}
+    },
+    {
+      "id": "field-history",
+      "prompt": "Who moved ABC-123 out of code review, and when did the priority change?",
+      "expect": {"tool": "get_changelog", "arguments": {"issue_key": "ABC-123"}}
+    },
+    {
+      "id": "list-attachments",
+      "prompt": "Does ABC-123 have any files attached, and how big are they?",
+      "expect": {"tool": "get_attachments", "arguments": {"issue_key": "ABC-123"}}
+    },
+    {
+      "id": "fetch-attachment",
+      "prompt": "Open attachment 80001 so I can read the stack trace inside it.",
+      "expect": {"tool": "download_attachment", "arguments": {"attachment_id": "80001"}}
+    },
+    {
+      "id": "report-progress",
+      "prompt": "Let the reporter of ABC-123 know I found the cause: a race in the retry loop.",
+      "expect": {"tool": "add_comment", "has_arguments": ["body"]}
+    },
+    {
+      "id": "record-a-link",
+      "prompt": "The fix for ABC-123 is at https://example.invalid/pr/7 - put that on the ticket so the reviewer can find it.",
+      "expect": {"tool": "add_comment"}
+    },
+    {
+      "id": "start-work",
+      "prompt": "I've started on ABC-123, move it along.",
+      "expect": {"tool": "transition_issue", "has_arguments": ["to"]}
+    },
+    {
+      "id": "finish-with-a-note",
+      "prompt": "ABC-123 is done and deployed to staging. Close it out and say so on the ticket.",
+      "expect": {"tool": "transition_issue", "has_arguments": ["comment"]}
+    },
+    {
+      "id": "take-the-ticket",
+      "prompt": "Put ABC-123 under my name.",
+      "expect": {"tool": "update_issue", "has_arguments": ["fields"]}
+    },
+    {
+      "id": "fix-the-title",
+      "prompt": "The title of ABC-123 has a typo: it should read 'Retry loop drops the last page'.",
+      "expect": {"tool": "update_issue", "has_arguments": ["fields"]}
+    },
+    {
+      "id": "label-it",
+      "prompt": "Tag ABC-123 as needing a follow-up, then leave the rest of it alone.",
+      "expect": {"tool": "update_issue"}
+    },
+    {
+      "id": "due-date",
+      "prompt": "ABC-123 has to be finished by the end of the year. Record that.",
+      "expect": {"tool": "update_issue", "has_arguments": ["fields"]}
+    }
+  ]
+}

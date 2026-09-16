@@ -629,6 +629,19 @@ Format code:
 uv run ruff format .
 ```
 
+The claim that a small toolset makes tool choice more reliable is tested rather
+than asserted. The offline half runs with the suite and checks that no two tool
+descriptions are near-duplicates and that every non-obvious parameter is
+explained in prose. The other half puts the real tool definitions in front of a
+real model and scores which tool it picks; it needs a model credential and
+spends money, so it is opt-in:
+
+```bash
+uv run python evals/run_eval.py
+```
+
+See `evals/README.md` for the scenarios and how to read a failure.
+
 ## Release model
 
 The project uses:
