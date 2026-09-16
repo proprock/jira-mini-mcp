@@ -1,0 +1,5 @@
+{
+  "_provenance": "Body shape observed live 2026-09-16 from GET /rest/api/3/issue/{bogus-key} on a Jira Cloud test site (404): {errorMessages: [...], errors: {}}. The message text below is the exact generic text Jira returns; it names no tenant or issue detail.",
+  "errorMessages": ["Issue does not exist or you do not have permission to see it."],
+  "errors": {}
+}
