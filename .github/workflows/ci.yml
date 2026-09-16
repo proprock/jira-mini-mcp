@@ -6,8 +6,31 @@ on:
     branches: [master]
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # paths-filter reads changed files from the GitHub API for pull_request
+      # events without needing a checkout; push events need local git history.
+      - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 2
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+
   quality:
     name: Quality (Python ${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -43,7 +66,8 @@ jobs:
 
   package:
     name: Build and verify distribution
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
