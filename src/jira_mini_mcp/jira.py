@@ -101,6 +101,27 @@ _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
 
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# One connect budget and a longer per-read budget: Jira is the slow part,
+# but a stalled socket must not hang the agent for the library default.
+HTTP_TIMEOUT = httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+# Waits before the second and third attempt. A table rather than computed
+# backoff: three attempts is the whole policy, and a table cannot grow a
+# branch no test reaches. No jitter -- one process issues these
+# sequentially, so there is nothing here to desynchronize.
+_BACKOFF_DELAYS: tuple[float, ...] = (0.5, 1.0)
+_MAX_ATTEMPTS = len(_BACKOFF_DELAYS) + 1
+
+# Honour Retry-After only while the wait is short enough to be worth
+# holding a tool call open; past that the caller is told to come back.
+_RETRY_AFTER_CAP = 60.0
+
+# A 429 is Jira refusing to process the request, so replaying it cannot
+# duplicate a write. A 5xx or a dropped connection may mean the write
+# landed, so only methods that converge on replay are retried -- never a
+# POST, which would post a second comment or run a transition twice.
+_REPLAYABLE_METHODS = frozenset({"GET", "PUT"})
+
 # Fields update_issue refuses, each pointing at the tool that does the job
 # or saying plainly that this server does not do it.
 _UPDATE_REJECTED_FIELDS: dict[str, str] = {
@@ -238,6 +259,22 @@ def _incomplete_response_error(
     )
 
 
+async def _sleep(seconds: float) -> None:
+    """Indirection so tests can drive backoff without real waiting."""
+    await asyncio.sleep(seconds)
+
+
+def _retry_delay(response: httpx2.Response, attempt: int) -> float | None:
+    """How long to wait before retrying, or None to stop retrying now."""
+    if response.status_code == 429:
+        retry_after = errors.retry_after_seconds(response)
+        if retry_after is not None:
+            if retry_after > _RETRY_AFTER_CAP:
+                return None
+            return retry_after
+    return _BACKOFF_DELAYS[attempt - 1]
+
+
 def _adf_or_validation_error(
     markdown: str, *, operation: str, issue_key: str | None
 ) -> dict[str, Any]:
@@ -360,38 +397,61 @@ class JiraClient:
         response as a parse failure.
         """
         url = f"{self._base_url}{path}"
-        try:
-            response = await self._client.request(
-                method, url, params=params, json=json_body, auth=self._auth
-            )
-        except httpx2.TimeoutException as exc:
-            raise errors.JiraTimeoutError(
-                f"Request timed out for operation '{operation}'. "
-                "Check network connectivity and retry.",
-                operation=operation,
-                issue_key=issue_key,
-            ) from exc
-        except httpx2.TransportError as exc:
-            raise errors.JiraNetworkError(
-                f"A network error occurred for operation '{operation}'. "
-                "Check connectivity and retry.",
-                operation=operation,
-                issue_key=issue_key,
-            ) from exc
+        replayable = method.upper() in _REPLAYABLE_METHODS
 
-        errors.raise_for_response(response, operation=operation, issue_key=issue_key)
+        attempt = 0
+        while True:
+            # A while loop rather than a range: every path out of the body
+            # returns or raises, and there is no loop exit to leave dead.
+            attempt += 1
+            final = attempt == _MAX_ATTEMPTS
+            try:
+                response = await self._client.request(
+                    method, url, params=params, json=json_body, auth=self._auth
+                )
+            except httpx2.TimeoutException as exc:
+                if final or not replayable:
+                    raise errors.JiraTimeoutError(
+                        f"Request timed out for operation '{operation}'. "
+                        "Check network connectivity and retry.",
+                        operation=operation,
+                        issue_key=issue_key,
+                    ) from exc
+                await _sleep(_BACKOFF_DELAYS[attempt - 1])
+                continue
+            except httpx2.TransportError as exc:
+                if final or not replayable:
+                    raise errors.JiraNetworkError(
+                        f"A network error occurred for operation '{operation}'. "
+                        "Check connectivity and retry.",
+                        operation=operation,
+                        issue_key=issue_key,
+                    ) from exc
+                await _sleep(_BACKOFF_DELAYS[attempt - 1])
+                continue
 
-        if not expect_json:
-            return None
+            retriable = response.status_code == 429 or (response.status_code >= 500 and replayable)
+            if retriable and not final:
+                delay = _retry_delay(response, attempt)
+                if delay is not None:
+                    await _sleep(delay)
+                    continue
 
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise errors.JiraServerError(
-                f"Jira returned a response that could not be parsed for operation '{operation}'.",
-                operation=operation,
-                issue_key=issue_key,
-            ) from exc
+            # Out of attempts, or not worth another: report the real failure.
+            errors.raise_for_response(response, operation=operation, issue_key=issue_key)
+
+            if not expect_json:
+                return None
+
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise errors.JiraServerError(
+                    "Jira returned a response that could not be parsed for operation "
+                    f"'{operation}'.",
+                    operation=operation,
+                    issue_key=issue_key,
+                ) from exc
 
     async def _get(
         self,
