@@ -1,9 +1,11 @@
-"""Tests for jira_mini_mcp.jira: JiraClient core, search_issues, get_issue.
+"""Tests for jira_mini_mcp.jira: JiraClient core, search_issues, get_issue,
+get_comments.
 
 Fixtures under tests/fixtures/jira_*.json trace to live, read-only requests
-against a Jira Cloud test site on 2026-09-16 (GET /rest/api/3/search/jql and
-GET /rest/api/3/issue/{key}), with every tenant/account/content value
-replaced by synthetic data. See each fixture's `_provenance` note.
+against a Jira Cloud test site on 2026-09-16 (GET /rest/api/3/search/jql,
+GET /rest/api/3/issue/{key}, and GET /rest/api/3/issue/{key}/comment), with
+every tenant/account/content value replaced by synthetic data. See each
+fixture's `_provenance` note.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import pytest
 from jira_mini_mcp import errors, jira
 from jira_mini_mcp.auth import BasicTokenAuth
 from jira_mini_mcp.jira import JiraClient
-from jira_mini_mcp.models import IssueDetail, IssueSummary, SearchPage
+from jira_mini_mcp.models import IssueDetail, IssueSummary, Page, SearchPage, User
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE_URL = "https://synthetic-tenant.atlassian.net"
@@ -535,3 +537,406 @@ class TestGetIssue:
 
         with pytest.raises(exc_class):
             await client.get_issue("SYN-1")
+
+
+def _synthetic_comment(index: int, created: str, comment_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": comment_id or str(1000 + index),
+        "author": {"accountId": f"syn-acc-{index}", "displayName": f"User {index}"},
+        "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": f"Comment {index}"}]}
+            ],
+        },
+        "created": created,
+        "updated": created,
+    }
+
+
+def _comments_backend_handler(
+    raw_comments: list[dict[str, Any]],
+) -> tuple[Handler, list[httpx2.Request]]:
+    """A stateful fake mirroring the live-observed comment endpoint: it honors
+    startAt/maxResults/orderBy over the full synthetic collection, sorted by
+    (created, id), so tests can exercise real multi-page pagination.
+    """
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        params = request.url.params
+        start_at = int(params["startAt"])
+        max_results = int(params["maxResults"])
+        order_by = params["orderBy"]
+        ordered = sorted(
+            raw_comments,
+            key=lambda c: (c["created"], c["id"]),
+            reverse=(order_by == "-created"),
+        )
+        page = ordered[start_at : start_at + max_results]
+        return _json_response(
+            200,
+            {
+                "startAt": start_at,
+                "maxResults": max_results,
+                "total": len(raw_comments),
+                "comments": page,
+            },
+        )
+
+    return handler, seen
+
+
+class TestGetComments:
+    async def test_uses_v3_comment_path(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(200, {"startAt": 0, "maxResults": 20, "total": 0, "comments": []})
+        )
+        client = _make_client(handler)
+
+        await client.get_comments("SYN-1")
+
+        assert seen[0].method == "GET"
+        assert seen[0].url.path == "/rest/api/3/issue/SYN-1/comment"
+
+    async def test_default_requests_newest_first(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(200, {"startAt": 0, "maxResults": 20, "total": 0, "comments": []})
+        )
+        client = _make_client(handler)
+
+        await client.get_comments("SYN-1")
+
+        params = seen[0].url.params
+        assert params["orderBy"] == "-created"
+        assert params["startAt"] == "0"
+        assert params["maxResults"] == "20"
+
+    async def test_full_response_shape_and_normalization(self) -> None:
+        fixture = _load("jira_comments_page.json")
+        handler, _ = _recording_handler(_json_response(200, fixture))
+        client = _make_client(handler)
+
+        result = await client.get_comments("SYN-301", limit=0, order="asc")
+
+        assert isinstance(result, Page)
+        assert result.start_at == 0
+        assert result.total == 3
+        assert [c.id for c in result.items] == ["71001", "71002", "71003"]
+
+        unedited = result.items[0]
+        assert unedited.author == User(account_id="syn-acc-301", display_name="Jordan Lee")
+        assert unedited.body == "First triage pass looks reasonable."
+        assert unedited.created == "2025-08-26T13:55:40Z"
+        assert unedited.updated is None  # updated == created is omitted
+        assert unedited.updated_by is None
+
+        edited_by_other = result.items[1]
+        assert edited_by_other.updated == "2025-08-27T15:20:05Z"
+        assert edited_by_other.updated_by == User(
+            account_id="syn-acc-303", display_name="Morgan Diaz"
+        )
+
+        edited_by_self = result.items[2]
+        assert edited_by_self.updated == "2025-08-28T13:58:00Z"
+        assert edited_by_self.updated_by is None  # same author as `author`: omitted
+
+    async def test_no_self_or_raw_adf_on_any_item(self) -> None:
+        fixture = _load("jira_comments_page.json")
+        handler, _ = _recording_handler(_json_response(200, fixture))
+        client = _make_client(handler)
+
+        result = await client.get_comments("SYN-301")
+
+        for comment in result.items:
+            assert not hasattr(comment, "self")
+            assert isinstance(comment.body, str)
+
+    async def test_ascending_and_descending_orders(self) -> None:
+        raw = [_synthetic_comment(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 6)]
+
+        desc_handler, _ = _comments_backend_handler(raw)
+        desc_result = await _make_client(desc_handler).get_comments("SYN-1", order="desc")
+        assert [c.id for c in desc_result.items] == ["1005", "1004", "1003", "1002", "1001"]
+
+        asc_handler, _ = _comments_backend_handler(raw)
+        asc_result = await _make_client(asc_handler).get_comments("SYN-1", order="asc")
+        assert [c.id for c in asc_result.items] == ["1001", "1002", "1003", "1004", "1005"]
+
+    async def test_nonzero_start_at_offsets_the_logical_collection(self) -> None:
+        raw = [_synthetic_comment(i, f"2025-01-0{i}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", start_at=2, limit=2, order="asc")
+
+        assert result.start_at == 2
+        assert result.total == 5
+        assert [c.id for c in result.items] == ["1003", "1004"]
+
+    async def test_equal_timestamps_ordered_by_id(self) -> None:
+        raw = [
+            _synthetic_comment(1, "2025-01-01T00:00:00Z", comment_id="20"),
+            _synthetic_comment(2, "2025-01-01T00:00:00Z", comment_id="10"),
+            _synthetic_comment(3, "2025-01-01T00:00:00Z", comment_id="30"),
+        ]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", order="asc")
+
+        assert [c.id for c in result.items] == ["10", "20", "30"]
+
+    async def test_limit_zero_returns_every_remaining_item(self) -> None:
+        raw = [_synthetic_comment(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", start_at=1, limit=0, order="asc")
+
+        assert result.total == 5
+        assert [c.id for c in result.items] == ["1002", "1003", "1004", "1005"]
+
+    async def test_reachable_beyond_100_comments_over_successive_calls(self) -> None:
+        raw = [
+            _synthetic_comment(i, f"2025-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}T00:00:00Z")
+            for i in range(150)
+        ]
+        handler, seen = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", start_at=0, limit=0, order="asc")
+
+        assert result.total == 150
+        assert len(result.items) == 150
+        assert len(seen) >= 2  # jira.COMMENTS_PAGE_SIZE (100) forces a second call
+
+    async def test_multi_page_fetch_with_shrunk_page_size(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "COMMENTS_PAGE_SIZE", 2)
+        raw = [_synthetic_comment(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, seen = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", limit=0, order="asc")
+
+        assert [c.id for c in result.items] == ["1001", "1002", "1003", "1004", "1005"]
+        assert len(seen) == 3  # 2 + 2 + 1
+
+    async def test_since_filters_before_ordering_and_slicing(self) -> None:
+        raw = [_synthetic_comment(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 6)]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments(
+            "SYN-1", since="2025-01-03T00:00:00Z", order="asc"
+        )
+
+        assert result.total == 3  # exact filtered total: comments 3, 4, 5
+        assert [c.id for c in result.items] == ["1003", "1004", "1005"]
+
+    async def test_since_early_stop_uses_fewer_calls_than_full_history_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "COMMENTS_PAGE_SIZE", 2)
+        raw = [_synthetic_comment(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 11)]
+        handler, seen = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments("SYN-1", since="2025-01-09T00:00:00Z")
+
+        assert [c.id for c in result.items] == ["1010", "1009"]
+        full_scan_calls = 5  # ceil(10 / page_size=2)
+        assert len(seen) < full_scan_calls
+
+    async def test_empty_comments(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"startAt": 0, "maxResults": 20, "total": 0, "comments": []})
+        )
+        client = _make_client(handler)
+
+        result = await client.get_comments("SYN-1")
+
+        assert result == Page(start_at=0, total=0, items=[])
+
+    async def test_start_beyond_total_returns_empty_items_with_one_call(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(200, {"startAt": 50, "maxResults": 20, "total": 5, "comments": []})
+        )
+        client = _make_client(handler)
+
+        result = await client.get_comments("SYN-1", start_at=50)
+
+        assert result == Page(start_at=50, total=5, items=[])
+        assert len(seen) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"startAt": 0, "maxResults": 20, "comments": []},
+            {"startAt": 0, "maxResults": 20, "total": "5", "comments": []},
+            {"startAt": 0, "maxResults": 20, "total": 5, "comments": "not-a-list"},
+            [],
+        ],
+    )
+    async def test_malformed_envelope_raises_server_error(self, body: Any) -> None:
+        handler, _ = _recording_handler(_json_response(200, body))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_comments("SYN-1")
+
+    async def test_sort_key_drops_missing_or_malformed_created_without_crashing(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 3,
+            "comments": [
+                _synthetic_comment(1, "2025-01-01T00:00:00Z"),
+                {**_synthetic_comment(2, ""), "created": None},
+                {**_synthetic_comment(3, ""), "created": "not-a-timestamp"},
+            ],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_comments("SYN-1", order="asc")
+
+        assert len(exc_info.value.problems) == 2
+        assert [c["id"] for c in exc_info.value.partial_result["items"]] == ["1001"]
+
+    async def test_since_scan_skips_comment_with_malformed_created(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "COMMENTS_PAGE_SIZE", 2)
+        raw = [
+            _synthetic_comment(1, "2025-01-01T00:00:00Z"),
+            {**_synthetic_comment(2, ""), "created": "not-a-timestamp"},
+            _synthetic_comment(3, "2025-01-03T00:00:00Z"),
+        ]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments(
+            "SYN-1", since="2020-01-01T00:00:00Z", order="asc"
+        )
+
+        assert [c.id for c in result.items] == ["1001", "1003"]
+
+    async def test_since_scan_skips_comment_with_missing_created(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "COMMENTS_PAGE_SIZE", 2)
+        raw = [
+            _synthetic_comment(1, "2025-01-01T00:00:00Z"),
+            _synthetic_comment(2, ""),  # missing/empty created: falls through, no exception
+            _synthetic_comment(3, "2025-01-03T00:00:00Z"),
+        ]
+        handler, _ = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments(
+            "SYN-1", since="2020-01-01T00:00:00Z", order="asc"
+        )
+
+        assert [c.id for c in result.items] == ["1001", "1003"]
+
+    async def test_sort_key_treats_non_dict_item_as_unsortable(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 2,
+            "comments": ["not-an-object", _synthetic_comment(1, "2025-01-01T00:00:00Z")],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_comments("SYN-1", order="asc")
+
+        assert [c["id"] for c in exc_info.value.partial_result["items"]] == ["1001"]
+
+    async def test_since_matches_entire_history_reaches_natural_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "COMMENTS_PAGE_SIZE", 2)
+        raw = [_synthetic_comment(i, f"2025-01-{i:02d}T00:00:00Z") for i in range(1, 5)]
+        handler, seen = _comments_backend_handler(raw)
+
+        result = await _make_client(handler).get_comments(
+            "SYN-1", since="2000-01-01T00:00:00Z", order="asc"
+        )
+
+        assert [c.id for c in result.items] == ["1001", "1002", "1003", "1004"]
+        assert len(seen) == 3  # 2 + 2, then one empty page confirms the natural end
+
+    async def test_malformed_resource_raises_with_sanitized_partial_page(self) -> None:
+        raw = {
+            "startAt": 0,
+            "maxResults": 20,
+            "total": 2,
+            "comments": [
+                _synthetic_comment(1, "2025-01-01T00:00:00Z"),
+                {"id": "1002", "author": None, "body": {}, "created": "2025-01-02T00:00:00Z"},
+            ],
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_comments("SYN-1", order="asc")
+
+        assert exc_info.value.problems == ("$.items[1].author: expected an object",)
+        assert exc_info.value.partial_result["total"] == 2  # Jira's total is unaffected
+        assert [c["id"] for c in exc_info.value.partial_result["items"]] == ["1001"]
+
+    async def test_response_has_only_start_at_total_items_fields(self) -> None:
+        field_names = {f.name for f in dataclasses.fields(Page)}
+        assert field_names == {"start_at", "total", "items"}
+
+    async def test_not_found_raises_with_issue_key(self) -> None:
+        fixture = _load("jira_issue_not_found.json")
+        handler, _ = _recording_handler(_json_response(404, fixture))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError) as exc_info:
+            await client.get_comments("SYN-404")
+
+        assert exc_info.value.issue_key == "SYN-404"
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("status", "exc_class"),
+        [
+            (401, errors.JiraAuthenticationError),
+            (403, errors.JiraPermissionError),
+            (404, errors.JiraNotFoundError),
+            (429, errors.JiraRateLimitError),
+            (500, errors.JiraServerError),
+        ],
+    )
+    async def test_error_status_codes_map_to_expected_exception(
+        self, status: int, exc_class: type[Exception]
+    ) -> None:
+        handler, _ = _recording_handler(
+            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(exc_class):
+            await client.get_comments("SYN-1")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message_fragment"),
+        [
+            ({"start_at": -1}, "non-negative"),
+            ({"limit": -1}, "non-negative"),
+            ({"order": "newest"}, "'asc' or 'desc'"),
+            ({"since": "2025-01-01"}, "explicit offset"),
+        ],
+    )
+    async def test_invalid_arguments_raise_without_http_call(
+        self, kwargs: dict[str, Any], message_fragment: str
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError("no HTTP call should be made for invalid arguments")
+
+        client = _make_client(handler)
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.get_comments("SYN-1", **kwargs)
+        assert message_fragment in str(exc_info.value)

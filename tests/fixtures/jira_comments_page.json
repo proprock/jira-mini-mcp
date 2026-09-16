@@ -1,0 +1,116 @@
+{
+  "_provenance": "Envelope and comment-object shape observed live 2026-09-16 against GET /rest/api/3/issue/{key}/comment on a Jira Cloud test site (217 real comments on the observed issue). Confirmed: no orderBy matches orderBy=created (ascending, oldest first); orderBy=-created returns newest first; startAt/maxResults index that same collection directly (startAt=1&maxResults=1 returned exactly the second ascending comment); startAt beyond total returns comments:[] with the correct total, not an error. Comment objects carry self, id, author, body (ADF), updateAuthor, created, updated (present and equal to created when unedited), and jsdPublic (a Jira Service Management flag outside this project's schema). All tenant, account, and content values below are synthesized.",
+  "startAt": 0,
+  "maxResults": 100,
+  "total": 3,
+  "comments": [
+    {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10301/comment/71001",
+      "id": "71001",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "First triage pass looks reasonable." }]
+          }
+        ]
+      },
+      "updateAuthor": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-26T09:55:40.906-0400",
+      "updated": "2025-08-26T09:55:40.906-0400",
+      "jsdPublic": true
+    },
+    {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10301/comment/71002",
+      "id": "71002",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-302",
+        "accountId": "syn-acc-302",
+        "emailAddress": "alex.kim@example.invalid",
+        "displayName": "Alex Kim",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "mention",
+                "attrs": { "id": "syn-acc-301", "text": "@Jordan Lee", "accessLevel": "" }
+              },
+              { "type": "text", "text": " can you confirm the fix ships in 2.4?" }
+            ]
+          }
+        ]
+      },
+      "updateAuthor": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-303",
+        "accountId": "syn-acc-303",
+        "emailAddress": "morgan.diaz@example.invalid",
+        "displayName": "Morgan Diaz",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-27T09:55:40.906-0400",
+      "updated": "2025-08-27T11:20:05.000-0400",
+      "jsdPublic": true
+    },
+    {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10301/comment/71003",
+      "id": "71003",
+      "author": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "Fixed a typo above." }] }
+        ]
+      },
+      "updateAuthor": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+        "accountId": "syn-acc-301",
+        "emailAddress": "jordan.lee@example.invalid",
+        "displayName": "Jordan Lee",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      },
+      "created": "2025-08-28T09:55:40.906-0400",
+      "updated": "2025-08-28T09:58:00.000-0400",
+      "jsdPublic": true
+    }
+  ]
+}

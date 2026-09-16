@@ -49,6 +49,150 @@ class TestUserAndCompactUser:
         assert "synthetic-tenant" not in text
 
 
+class TestNormalizeComment:
+    def _raw(self, **overrides: object) -> dict:
+        base = {
+            "id": "92351",
+            "author": {"accountId": "syn-acc-001", "displayName": "Jordan Lee"},
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [{"type": "paragraph", "content": []}],
+            },
+            "created": "2025-08-26T09:55:40.906-04:00",
+        }
+        base.update(overrides)
+        return base
+
+    def test_minimal_comment_omits_updated_and_updated_by(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(self._raw(), "$.comments[0]", problems)
+        assert problems == []
+        assert comment == models.Comment(
+            id="92351",
+            author=models.User(account_id="syn-acc-001", display_name="Jordan Lee"),
+            body="",
+            created="2025-08-26T13:55:40Z",
+        )
+
+    def test_updated_equal_to_created_is_omitted(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(
+                updated="2025-08-26T09:55:40.906-04:00",
+                updateAuthor={"accountId": "syn-acc-001", "displayName": "Jordan Lee"},
+            ),
+            "$.comments[0]",
+            problems,
+        )
+        assert problems == []
+        assert comment is not None
+        assert comment.updated is None
+        assert comment.updated_by is None
+
+    def test_updated_by_same_user_is_omitted(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(
+                updated="2025-08-27T09:55:40.906-04:00",
+                updateAuthor={"accountId": "syn-acc-001", "displayName": "Jordan Lee"},
+            ),
+            "$.comments[0]",
+            problems,
+        )
+        assert problems == []
+        assert comment is not None
+        assert comment.updated == "2025-08-27T13:55:40Z"
+        assert comment.updated_by is None
+
+    def test_updated_by_different_user_is_included(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(
+                updated="2025-08-27T09:55:40.906-04:00",
+                updateAuthor={"accountId": "syn-acc-002", "displayName": "Alex Kim"},
+            ),
+            "$.comments[0]",
+            problems,
+        )
+        assert problems == []
+        assert comment is not None
+        assert comment.updated == "2025-08-27T13:55:40Z"
+        assert comment.updated_by == models.User(account_id="syn-acc-002", display_name="Alex Kim")
+
+    def test_updated_differs_with_no_update_author_key(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(updated="2025-08-27T09:55:40.906-04:00"),
+            "$.comments[0]",
+            problems,
+        )
+        assert problems == []
+        assert comment is not None
+        assert comment.updated == "2025-08-27T13:55:40Z"
+        assert comment.updated_by is None
+
+    def test_non_string_updated_records_problem_without_dropping_comment(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(self._raw(updated=12345), "$.comments[0]", problems)
+        assert comment is not None
+        assert comment.updated is None
+        assert [str(p) for p in problems] == ["$.comments[0].updated: expected a string"]
+
+    def test_no_self_or_visibility_leak(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(
+            visibility={"type": "role", "value": "Administrators"},
+            jsdPublic=True,
+        )
+        raw["self"] = "https://synthetic-tenant.atlassian.net/rest/api/3/issue/1/comment/92351"
+        comment = models.normalize_comment(raw, "$.comments[0]", problems)
+        assert not hasattr(comment, "self")
+        assert not hasattr(comment, "visibility")
+        assert not hasattr(comment, "jsdPublic")
+
+    def test_missing_id_drops_comment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(self._raw(id=None), "$.comments[0]", problems)
+        assert comment is None
+        assert [str(p) for p in problems] == ["$.comments[0].id: expected a non-empty string"]
+
+    def test_missing_author_drops_comment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(self._raw(author=None), "$.comments[0]", problems)
+        assert comment is None
+        assert any(p.path == "$.comments[0].author" for p in problems)
+
+    def test_malformed_created_drops_comment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(created="not-a-timestamp"), "$.comments[0]", problems
+        )
+        assert comment is None
+        assert any(p.path == "$.comments[0].created" for p in problems)
+
+    def test_non_object_body_drops_comment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(self._raw(body="plain text"), "$.comments[0]", problems)
+        assert comment is None
+        assert any(p.path == "$.comments[0].body" for p in problems)
+
+    def test_malformed_updated_is_omitted_without_dropping_comment(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment(
+            self._raw(updated="not-a-timestamp"), "$.comments[0]", problems
+        )
+        assert comment is not None
+        assert comment.updated is None
+        assert any(p.path == "$.comments[0].updated" for p in problems)
+
+    def test_non_object_raw_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        comment = models.normalize_comment("not-an-object", "$.comments[0]", problems)
+        assert comment is None
+        assert [str(p) for p in problems] == ["$.comments[0]: expected an object"]
+
+
 class TestAdfToMarkdown:
     def test_full_node_coverage(self) -> None:
         fixture = _load("adf_node_coverage.json")
