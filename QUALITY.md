@@ -49,6 +49,10 @@ non-secret request options, observation date, behavior represented, and the fact
 that all values were synthesized. Do not deliberately trigger unsafe or abusive
 failure scenarios on the live service; construct those synthetic failures from
 the closest safely observed response shape and documented status semantics.
+When a positive case could not be observed, mark its synthetic fixture as
+hand-authored rather than implying live provenance. In particular, the current
+non-empty `components` unit fixture is hand-authored because the test site had
+no issue with components assigned.
 
 Mock the HTTP boundary. Cover authentication configuration, Jira error mapping,
 pagination across more than one page, default newest-first comments, ascending
@@ -85,6 +89,18 @@ Contract tests must also verify:
   normalization from multiple explicit offsets;
 - absent fields are omitted, requested unknown/custom fields are retained, and
   compact user objects contain no email, avatar, or `self` URL;
+- each known resource has the exact compact schema from
+  `PROJECT-CONTRACTS.md`; extra keys such as `self`, URLs, icons, descriptions,
+  scope, nested `fields`, and issue IDs are removed;
+- `hierarchyLevel` maps to `hierarchy_level`, `statusCategory.key` maps to
+  `category`, and parent, subtasks, and inward/outward issue links share the
+  compact issue-reference shape;
+- malformed known resources aggregate exact JSON-path problems in
+  `JiraIncompleteResponseError` while its partial issue or search result keeps
+  only successfully normalized, sanitized data;
+- `get_issue(fields=[])` sends the verified `fields=id` sentinel and returns
+  `{key, fields: {}}`; its test and comment must not assume a stable count for
+  the tenant- and permission-dependent full field set;
 - failures are MCP tool errors with cause and corrective guidance where known,
   while logs and model-visible errors contain no URL, credential, header, raw
   response body, or attachment content;

@@ -12,8 +12,10 @@ small, predictable, compact, and suitable for direct installation from GitHub.
 - Keep MCP tools orthogonal. Do not add aliases or mirror Jira REST endpoints.
 - Preserve published tool names, arguments, defaults, and response schemas
   unless a deliberate public API change is required.
-- Normalize Jira REST responses into compact, stable MCP structures. Never
-  silently truncate a collection or disguise a failed request as an empty one.
+- Normalize known Jira REST resources into the exact compact schemas in
+  `PROJECT-CONTRACTS.md`; preserve Jira JSON only for unknown and
+  `customfield_*` values. Never silently truncate a collection or disguise a
+  failed request as an empty one.
 - Comments and changelog responses use only `start_at`, exact `total`, and
   `items`; their pagination is defined over the logical filtered collection,
   not Jira's incidental upstream page order. Search follows Jira Cloud v3's
@@ -25,6 +27,9 @@ small, predictable, compact, and suitable for direct installation from GitHub.
   secrets, cloud IDs, or attachment contents. Redact sensitive values in errors.
 - Make tool errors actionable: state the cause and, when known, how the caller
   can correct it without exposing sensitive data.
+- When a malformed known resource allows a useful partial issue result, keep
+  the successfully normalized data and report the incomplete response as an
+  error with exact JSON paths; never leak the malformed raw object.
 - Use async I/O, type hints, small explicit modules, and the existing
   dependencies before considering a new abstraction or dependency.
 - Keep the HTTP boundary mockable; default tests must not need a live Jira

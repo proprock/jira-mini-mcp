@@ -39,10 +39,46 @@ Represent a Jira user as:
 {"account_id": "...", "display_name": "..."}
 ```
 
-Known normalized user and resource objects omit email addresses, Jira `self`
-URLs, avatar URLs, and credential-bearing data. Omit unrequested or absent
-fields instead of emitting `null`. Unknown and `customfield_*` values remain
-Jira JSON, except for the common ADF and timestamp normalization rules.
+Normalize known issue resources to these exact shapes:
+
+```text
+issuetype  = {id, name, hierarchy_level}
+status     = {id, name, category}
+priority   = {id, name}
+project    = {id, key, name}
+components = [{id, name}, ...]
+```
+
+`issuetype.hierarchy_level` comes from Jira's `hierarchyLevel`, and
+`status.category` comes from `statusCategory.key`. The common issue-reference
+shape is `{key, summary?, status?, issuetype?}`. Use it for `parent`, each item
+in `subtasks`, and the `issue` value in an issue link; the optional `status`
+and `issuetype` values use the compact shapes above. An issue link is
+`{relationship, issue}`: for `inwardIssue`, take `relationship` from
+`type.inward`; for `outwardIssue`, take it from `type.outward`, following
+Jira's [issue-linking model](https://developer.atlassian.com/cloud/jira/platform/issue-linking-model/).
+
+Known normalized users and resources contain no additional Jira keys. In
+particular, omit email addresses, `self`, avatar and icon URLs, descriptions,
+scope data, nested `fields`, and issue IDs. Omit unrequested, absent, or `null`
+optional values instead of emitting `null` or making follow-up requests.
+Unknown and `customfield_*` values remain Jira JSON, except for the common ADF
+and timestamp normalization rules.
+
+Validate the expected scalar types and required identities of known resources:
+`id` and `name`, plus `project.key` or `issue.key` where applicable. An issue
+link must contain exactly one of `inwardIssue` and `outwardIssue`, together with
+the corresponding relationship text. If Jira returns a malformed known
+resource, normalize the rest best-effort, aggregate every problem with its
+exact JSON path, and raise `JiraIncompleteResponseError`. Its JSON-ready partial
+result is `{key, fields}` for `get_issue` or `{items, next_page_token}` for
+search, and contains only successfully normalized, sanitized data. It never
+contains the raw malformed object, URLs, icons, or credential-bearing data.
+
+At the MCP boundary, this exception becomes `CallToolResult(isError=True)`.
+The text explains the cause and incomplete result, then includes
+`Partial result:` followed by compact JSON. A duplicate `structuredContent`
+value is not required.
 
 Tool failures are MCP tool errors, never successful responses containing an
 `error` field. Whenever possible, state both the cause and how the caller can
@@ -95,8 +131,11 @@ project, parent, subtasks
 ```
 
 An explicit list replaces the default, and `fields=[]` returns `key` with an
-empty `fields` object. Do not include complete comments, attachment bodies, or
-changelog history; those belong to dedicated tools.
+empty `fields` object. Jira Cloud treats both `fields=""` and `fields=-*` as an
+unspecified field selection for this endpoint, so the client sends the sentinel
+`fields=id`; the full field set otherwise returned varies by tenant and
+permissions. Do not include complete comments, attachment bodies, or changelog
+history; those belong to dedicated tools.
 
 ### `get_comments`
 

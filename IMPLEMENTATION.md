@@ -60,6 +60,18 @@ when that is known. Do not include raw response bodies, request URLs, headers,
 or exception representations until they have been sanitized. In particular,
 `search_issues(limit=0)` must tell the caller that `limit` must be in `1..100`.
 
+If one or more known resources in an otherwise useful issue or search response
+are malformed, `JiraClient` raises `JiraIncompleteResponseError`. The exception
+contains exact JSON-path problems and a JSON-ready sanitized partial result.
+For `get_issue` the partial shape is `{key, fields}`; for search it is
+`{items, next_page_token}`. Continue normalizing independent fields and items so
+all detected problems are reported together. Do not include a malformed raw
+object, request URL, icon URL, or credentials in either the exception or its
+partial result. The future MCP adapter renders this as
+`CallToolResult(isError=True)` with an explanation followed by
+`Partial result:` and compact JSON; it need not duplicate the value in
+`structuredContent`.
+
 ## Normalization and response shapes
 
 Return typed structures so MCPServer can publish and validate output schemas.
@@ -77,11 +89,19 @@ Normalize timestamps to UTC ISO-8601 with a `Z` suffix. Parse `since` only when
 it includes `Z` or an explicit numeric offset. Sort comments and changelog
 entries by `(created, id)` so equal timestamps remain deterministic.
 
-Normalize known Jira fields into compact values. Keep explicitly requested
-unknown and `customfield_*` values as Jira JSON except for recursive ADF and
-timestamp normalization. Omit absent or unrequested fields instead of returning
-`null`. Represent users as `account_id` plus `display_name`; remove email,
-avatar, and `self` URL data.
+Normalize known Jira fields with small explicit functions into the exact shapes
+defined by `PROJECT-CONTRACTS.md`. Validate required identifiers and scalar
+types while accumulating path-aware problems. Extra keys on known resources
+are discarded. Keep explicitly requested unknown and `customfield_*` values as
+Jira JSON except for recursive ADF and timestamp normalization. Omit absent or
+unrequested fields instead of returning `null` or issuing follow-up requests.
+Represent users as `account_id` plus `display_name`; remove email, avatar, and
+`self` URL data.
+
+For `get_issue(fields=[])`, send `fields=id` internally and return an empty
+public `fields` object. Live Jira Cloud verification showed that `fields=""`
+and `fields=-*` act as an unspecified selection and return the tenant- and
+permission-dependent full field set, while `fields=id` leaves `fields` empty.
 
 ## Pagination algorithms
 

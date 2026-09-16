@@ -532,7 +532,19 @@ Use the equivalent stdio MCP configuration in another host: command `uvx`, argum
 
 Tool results are structured JSON with stable output schemas. Rich Jira Cloud ADF in issue descriptions and comments is converted to Markdown inside the corresponding string field; the server does not return a second duplicate rendering of the result.
 
-Dates are normalized to UTC ISO-8601 with a `Z` suffix. Users are represented only by `account_id` and `display_name`. Absent and unrequested fields are omitted rather than returned as `null`.
+Dates are normalized to UTC ISO-8601 with a `Z` suffix. Users are represented only by `account_id` and `display_name`. Known Jira resources use compact schemas:
+
+```text
+issuetype  = {id, name, hierarchy_level}
+status     = {id, name, category}
+priority   = {id, name}
+project    = {id, key, name}
+components = [{id, name}, ...]
+issue      = {key, summary?, status?, issuetype?}
+issuelink  = {relationship, issue}
+```
+
+The issue-reference shape is shared by `parent`, `subtasks`, and linked issues. `relationship` is the direction-appropriate inward or outward text from Jira. Extra Jira resource keys, including `self`, icons, avatars, descriptions, scope, and nested `fields`, are removed. Absent and unrequested values are omitted rather than returned as `null`.
 
 `search_issues` defaults to these seven fields:
 
@@ -548,7 +560,9 @@ labels, components, created, updated, resolutiondate, issuelinks,
 project, parent, subtasks
 ```
 
-An explicit `fields` list replaces the default completely; the server does not add hidden fields. `fields=[]` returns issue keys only. Each result contains `key` and a `fields` object. Explicitly requested unknown or `customfield_*` values are preserved as Jira JSON, apart from the common ADF and timestamp normalization.
+An explicit `fields` list replaces the default completely; the server does not add hidden fields. `fields=[]` returns issue keys only. For `get_issue`, the client uses `fields=id` internally because Jira Cloud treats `fields=""` and `fields=-*` as an unspecified selection whose full result depends on the tenant and permissions. Each result contains `key` and a `fields` object. Explicitly requested unknown or `customfield_*` values are preserved as Jira JSON, apart from the common ADF and timestamp normalization.
+
+If Jira returns a malformed known resource but other issue data is usable, the operation fails explicitly with the reasons and exact JSON paths, followed by a sanitized partial result. Valid independent fields and search items are preserved; the malformed raw object, URLs, icons, and credentials are never included.
 
 ## Development
 
