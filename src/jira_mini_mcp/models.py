@@ -525,6 +525,76 @@ def normalize_comment(raw: Any, path: str, problems: list[NormalizationProblem])
     )
 
 
+def normalize_attachment(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> Attachment | None:
+    """Normalize one raw Jira attachment; return None if a required part is unusable.
+
+    Every field is required: a caller cannot usefully list or later download
+    an attachment missing an id, filename, size, author, or created date.
+    Jira's own two endpoints disagree on `id`'s JSON type (string when
+    embedded in an issue's `fields.attachment`, integer from
+    `GET /rest/api/3/attachment/{id}`), so both are accepted here.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    raw_id = raw.get("id")
+    attachment_id: str | None = None
+    if isinstance(raw_id, str) and raw_id:
+        attachment_id = raw_id
+    elif isinstance(raw_id, int) and not isinstance(raw_id, bool):
+        attachment_id = str(raw_id)
+    else:
+        _add_problem(problems, f"{path}.id", "expected a non-empty string or integer")
+
+    filename = _required_string(raw, "filename", path, problems)
+    mime_type = _required_string(raw, "mimeType", path, problems)
+
+    raw_size = raw.get("size")
+    size: int | None = None
+    if isinstance(raw_size, int) and not isinstance(raw_size, bool) and raw_size >= 0:
+        size = raw_size
+    else:
+        _add_problem(problems, f"{path}.size", "expected a non-negative integer")
+
+    author = _normalize_user(raw.get("author"), f"{path}.author", problems)
+
+    created_raw = raw.get("created")
+    created: str | None = None
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            created = to_utc_iso(created_raw)
+        except ValueError:
+            _add_problem(
+                problems,
+                f"{path}.created",
+                "expected an ISO-8601 timestamp with an explicit offset",
+            )
+    else:
+        _add_problem(problems, f"{path}.created", "expected a non-empty string")
+
+    if (
+        attachment_id is None
+        or filename is None
+        or mime_type is None
+        or size is None
+        or author is None
+        or created is None
+    ):
+        return None
+
+    return Attachment(
+        id=attachment_id,
+        filename=filename,
+        mime_type=mime_type,
+        size=size,
+        author=author,
+        created=created,
+    )
+
+
 def normalize_issue_fields(raw_fields: dict[str, Any], *, path: str = "$.fields") -> dict[str, Any]:
     """Normalize a raw Jira `fields` object into its compact response form.
 

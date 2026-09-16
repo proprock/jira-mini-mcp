@@ -1,0 +1,46 @@
+{
+  "_provenance": "Shape observed live 2026-09-16 against GET /rest/api/3/issue/{key}?fields=attachment on a Jira Cloud test site. Confirmed: attachment metadata is embedded at fields.attachment (a list), each item carries self, id (string here), filename, author, created, size, mimeType, content, and thumbnail. All tenant, account, and content values below are synthesized.",
+  "key": "SYN-1",
+  "fields": {
+    "attachment": [
+      {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/80001",
+        "id": "80001",
+        "filename": "diagnostics.log",
+        "author": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-301",
+          "accountId": "syn-acc-301",
+          "emailAddress": "jordan.lee@example.invalid",
+          "displayName": "Jordan Lee",
+          "active": true,
+          "timeZone": "America/New_York",
+          "accountType": "atlassian"
+        },
+        "created": "2025-08-26T09:55:40.906-0400",
+        "size": 4096,
+        "mimeType": "text/plain",
+        "content": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/content/80001",
+        "thumbnail": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/thumbnail/80001"
+      },
+      {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/80002",
+        "id": "80002",
+        "filename": "screenshot.png",
+        "author": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-302",
+          "accountId": "syn-acc-302",
+          "emailAddress": "alex.kim@example.invalid",
+          "displayName": "Alex Kim",
+          "active": true,
+          "timeZone": "America/New_York",
+          "accountType": "atlassian"
+        },
+        "created": "2025-08-27T09:55:40.906-0400",
+        "size": 112830,
+        "mimeType": "image/png",
+        "content": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/content/80002",
+        "thumbnail": "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/thumbnail/80002"
+      }
+    ]
+  }
+}

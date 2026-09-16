@@ -7,21 +7,26 @@ through the private `_get` helper, which attaches auth, maps failures via
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 import httpx2
 
 from jira_mini_mcp import errors
 from jira_mini_mcp.auth import BasicTokenAuth
 from jira_mini_mcp.models import (
+    Attachment,
     Comment,
+    DownloadResult,
     IncompleteNormalizationError,
     IssueDetail,
     IssueSummary,
     NormalizationProblem,
     Page,
     SearchPage,
+    normalize_attachment,
     normalize_comment,
     normalize_issue_fields,
     to_utc_iso,
@@ -100,6 +105,60 @@ def _comment_sort_key(raw: Any) -> tuple[str, str]:
     return (created_utc, comment_id if isinstance(comment_id, str) else "")
 
 
+def _sanitize_attachment_filename(filename: str) -> str:
+    """Reduce a Jira-provided filename to a safe basename for the cache.
+
+    Splits on both `/` and `\\` -- the cache may run on POSIX or Windows --
+    discards directory and `.`/`..` segments, and rejects an empty or hidden
+    (dotfile) result. This intentionally loses any original subdirectory
+    structure; only the final component is trusted.
+    """
+    normalized = filename.replace("\\", "/")
+    segments = [s for s in normalized.split("/") if s not in ("", ".", "..")]
+    if not segments:
+        raise ValueError("filename has no usable basename after sanitization")
+    candidate = segments[-1]
+    if candidate.startswith("."):
+        raise ValueError("filename sanitizes to a hidden file")
+    return candidate
+
+
+def _validate_attachment_id(attachment_id: str) -> None:
+    """Reject an `attachment_id` that would escape its cache subdirectory.
+
+    Unlike a Jira-provided filename, `attachment_id` is a caller-supplied
+    public argument that becomes a path segment directly
+    (`<cache>/<attachment_id>/...`); it gets a strict validation error
+    instead of best-effort sanitization.
+    """
+    if (
+        not attachment_id
+        or "/" in attachment_id
+        or "\\" in attachment_id
+        or attachment_id in (".", "..")
+    ):
+        raise errors.JiraValidationError(
+            "download_attachment 'attachment_id' must be a plain identifier "
+            "with no path separators.",
+            operation="download_attachment",
+        )
+
+
+def _open_binary_for_write(path: Path) -> BinaryIO:
+    """Typed wrapper so `Path.open`'s overloaded return type stays unambiguous
+    once passed through `asyncio.to_thread`'s generic signature."""
+    return path.open("wb")
+
+
+async def _remove_part_file(part_path: Path) -> None:
+    """Best-effort cleanup of a `.part` file after a failed or cancelled download."""
+
+    def _unlink() -> None:
+        part_path.unlink(missing_ok=True)
+
+    await asyncio.to_thread(_unlink)
+
+
 def _incomplete_response_error(
     *,
     operation: str,
@@ -120,10 +179,19 @@ def _incomplete_response_error(
 class JiraClient:
     """Pure Jira Cloud REST API v3 client. Holds no MCP dependency."""
 
-    def __init__(self, client: httpx2.AsyncClient, auth: BasicTokenAuth, base_url: str) -> None:
+    def __init__(
+        self,
+        client: httpx2.AsyncClient,
+        auth: BasicTokenAuth,
+        base_url: str,
+        cache_dir: Path,
+    ) -> None:
         self._client = client
         self._auth = auth
         self._base_url = base_url.rstrip("/")
+        # Must already exist (created once by the MCP lifespan); this client
+        # only creates the per-attachment subdirectory beneath it.
+        self._cache_dir = cache_dir
 
     async def _get(
         self,
@@ -478,3 +546,166 @@ class JiraClient:
             )
 
         return result
+
+    async def get_attachments(self, issue_key: str) -> list[Attachment]:
+        body = await self._get(
+            f"/rest/api/3/issue/{issue_key}",
+            operation="get_attachments",
+            issue_key=issue_key,
+            params={"fields": "attachment"},
+        )
+        if not isinstance(body, dict):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'get_attachments'.",
+                operation="get_attachments",
+                issue_key=issue_key,
+            )
+
+        raw_fields = body.get("fields")
+        if not isinstance(raw_fields, dict):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'get_attachments'.",
+                operation="get_attachments",
+                issue_key=issue_key,
+            )
+
+        raw_attachments = raw_fields.get("attachment", [])
+        if not isinstance(raw_attachments, list):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'get_attachments'.",
+                operation="get_attachments",
+                issue_key=issue_key,
+            )
+
+        items: list[Attachment] = []
+        problems: list[str] = []
+        for index, raw in enumerate(raw_attachments):
+            model_problems: list[NormalizationProblem] = []
+            attachment = normalize_attachment(raw, f"$.fields.attachment[{index}]", model_problems)
+            problems.extend(str(problem) for problem in model_problems)
+            if attachment is not None:
+                items.append(attachment)
+
+        if problems:
+            # PROJECT-CONTRACTS.md only spells out partial shapes for
+            # get_issue/search; get_attachments returns a plain list, so
+            # {"items": [...]} is this project's own reasoned extension of
+            # the same aggregate-problems convention used elsewhere.
+            raise _incomplete_response_error(
+                operation="get_attachments",
+                issue_key=issue_key,
+                problems=problems,
+                partial_result={"items": [asdict(item) for item in items]},
+            )
+
+        return items
+
+    async def download_attachment(self, attachment_id: str) -> DownloadResult:
+        _validate_attachment_id(attachment_id)
+
+        metadata = await self._get(
+            f"/rest/api/3/attachment/{attachment_id}",
+            operation="download_attachment",
+        )
+        if not isinstance(metadata, dict):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'download_attachment'.",
+                operation="download_attachment",
+            )
+
+        # DownloadResult needs only filename/mime_type/size/content, not
+        # author/created, so this checks a narrower set than
+        # normalize_attachment (used by get_attachments) -- a malformed
+        # author shouldn't block an otherwise-downloadable attachment.
+        filename = metadata.get("filename")
+        mime_type = metadata.get("mimeType")
+        size = metadata.get("size")
+        content_url = metadata.get("content")
+        problems: list[str] = []
+        if not isinstance(filename, str) or not filename:
+            problems.append("$.filename: expected a non-empty string")
+        if not isinstance(mime_type, str) or not mime_type:
+            problems.append("$.mimeType: expected a non-empty string")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            problems.append("$.size: expected a non-negative integer")
+        if not isinstance(content_url, str) or not content_url:
+            problems.append("$.content: expected a non-empty string")
+        if problems:
+            raise errors.JiraServerError(
+                "Jira returned incomplete attachment metadata for operation "
+                f"'download_attachment': {'; '.join(problems)}",
+                operation="download_attachment",
+            )
+        assert isinstance(filename, str)
+        assert isinstance(mime_type, str)
+        assert isinstance(size, int)
+        assert isinstance(content_url, str)
+
+        try:
+            sanitized_filename = _sanitize_attachment_filename(filename)
+        except ValueError as exc:
+            raise errors.JiraValidationError(
+                f"download_attachment could not derive a safe filename: {exc}",
+                operation="download_attachment",
+            ) from exc
+
+        dest_dir = self._cache_dir / attachment_id
+        final_path = dest_dir / sanitized_filename
+        part_path = final_path.with_name(final_path.name + ".part")
+
+        # Resolve before any write: this follows symlinks in every existing
+        # ancestor (including one an attacker planted at dest_dir itself)
+        # and rejects the download if the result would land outside the
+        # cache, per PROJECT-CONTRACTS.md/PLAN.agents.md's symlink/
+        # reparse-point-escape requirement.
+        cache_root = self._cache_dir.resolve()
+        resolved_final = final_path.resolve()
+        if not resolved_final.is_relative_to(cache_root):
+            raise errors.JiraValidationError(
+                "download_attachment refused to write outside the attachment cache.",
+                operation="download_attachment",
+            )
+
+        await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
+
+        try:
+            async with self._client.stream(
+                "GET", content_url, auth=self._auth, follow_redirects=True
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    errors.raise_for_response(response, operation="download_attachment")
+
+                fh = await asyncio.to_thread(_open_binary_for_write, part_path)
+                try:
+                    async for chunk in response.aiter_bytes():
+                        await asyncio.to_thread(fh.write, chunk)
+                finally:
+                    await asyncio.to_thread(fh.close)
+        except httpx2.TimeoutException as exc:
+            await _remove_part_file(part_path)
+            raise errors.JiraTimeoutError(
+                "Request timed out for operation 'download_attachment'. "
+                "Check network connectivity and retry.",
+                operation="download_attachment",
+            ) from exc
+        except httpx2.TransportError as exc:
+            await _remove_part_file(part_path)
+            raise errors.JiraNetworkError(
+                "A network error occurred for operation 'download_attachment'. "
+                "Check connectivity and retry.",
+                operation="download_attachment",
+            ) from exc
+        except BaseException:
+            await _remove_part_file(part_path)
+            raise
+
+        await asyncio.to_thread(part_path.replace, final_path)
+
+        return DownloadResult(
+            attachment_id=attachment_id,
+            filename=sanitized_filename,
+            mime_type=mime_type,
+            size=size,
+            local_path=str(final_path),
+        )

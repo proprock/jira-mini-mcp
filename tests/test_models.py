@@ -193,6 +193,121 @@ class TestNormalizeComment:
         assert [str(p) for p in problems] == ["$.comments[0]: expected an object"]
 
 
+class TestNormalizeAttachment:
+    def _raw(self, **overrides: object) -> dict:
+        base = {
+            "id": "80001",
+            "filename": "diagnostics.log",
+            "author": {"accountId": "syn-acc-001", "displayName": "Jordan Lee"},
+            "created": "2025-08-26T09:55:40.906-04:00",
+            "size": 4096,
+            "mimeType": "text/plain",
+        }
+        base.update(overrides)
+        return base
+
+    def test_minimal_attachment_normalizes(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(self._raw(), "$.attachment[0]", problems)
+        assert problems == []
+        assert attachment == models.Attachment(
+            id="80001",
+            filename="diagnostics.log",
+            mime_type="text/plain",
+            size=4096,
+            author=models.User(account_id="syn-acc-001", display_name="Jordan Lee"),
+            created="2025-08-26T13:55:40Z",
+        )
+
+    def test_integer_id_is_accepted_and_stringified(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(self._raw(id=80001), "$.attachment[0]", problems)
+        assert problems == []
+        assert attachment is not None
+        assert attachment.id == "80001"
+
+    def test_no_self_or_thumbnail_leak(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = self._raw(
+            thumbnail="https://synthetic-tenant.atlassian.net/rest/api/3/attachment/thumbnail/80001"
+        )
+        raw["self"] = "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/80001"
+        raw["content"] = (
+            "https://synthetic-tenant.atlassian.net/rest/api/3/attachment/content/80001"
+        )
+        attachment = models.normalize_attachment(raw, "$.attachment[0]", problems)
+        assert not hasattr(attachment, "self")
+        assert not hasattr(attachment, "thumbnail")
+        assert not hasattr(attachment, "content")
+
+    def test_missing_id_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(self._raw(id=None), "$.attachment[0]", problems)
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].id" for p in problems)
+
+    def test_boolean_id_is_rejected(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(self._raw(id=True), "$.attachment[0]", problems)
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].id" for p in problems)
+
+    def test_missing_filename_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(filename=None), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].filename" for p in problems)
+
+    def test_missing_mime_type_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(mimeType=None), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].mimeType" for p in problems)
+
+    @pytest.mark.parametrize("bad_size", [None, -1, "4096", True])
+    def test_invalid_size_drops_attachment_and_records_problem(self, bad_size: object) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(size=bad_size), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].size" for p in problems)
+
+    def test_missing_author_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(author=None), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].author" for p in problems)
+
+    def test_malformed_created_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(created="not-a-timestamp"), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].created" for p in problems)
+
+    def test_non_string_created_drops_attachment_and_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment(
+            self._raw(created=12345), "$.attachment[0]", problems
+        )
+        assert attachment is None
+        assert any(p.path == "$.attachment[0].created" for p in problems)
+
+    def test_non_object_raw_records_problem(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        attachment = models.normalize_attachment("not-an-object", "$.attachment[0]", problems)
+        assert attachment is None
+        assert [str(p) for p in problems] == ["$.attachment[0]: expected an object"]
+
+
 class TestAdfToMarkdown:
     def test_full_node_coverage(self) -> None:
         fixture = _load("adf_node_coverage.json")

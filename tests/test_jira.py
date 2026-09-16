@@ -1,15 +1,17 @@
 """Tests for jira_mini_mcp.jira: JiraClient core, search_issues, get_issue,
-get_comments.
+get_comments, get_attachments, download_attachment.
 
 Fixtures under tests/fixtures/jira_*.json trace to live, read-only requests
 against a Jira Cloud test site on 2026-09-16 (GET /rest/api/3/search/jql,
-GET /rest/api/3/issue/{key}, and GET /rest/api/3/issue/{key}/comment), with
-every tenant/account/content value replaced by synthetic data. See each
-fixture's `_provenance` note.
+GET /rest/api/3/issue/{key}, GET /rest/api/3/issue/{key}/comment,
+GET /rest/api/3/issue/{key}?fields=attachment, and
+GET /rest/api/3/attachment/{id}), with every tenant/account/content value
+replaced by synthetic data. See each fixture's `_provenance` note.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import json
@@ -42,11 +44,11 @@ def _json_response(status_code: int, body: Any) -> httpx2.Response:
 Handler = Callable[[httpx2.Request], httpx2.Response]
 
 
-def _make_client(handler: Handler) -> JiraClient:
+def _make_client(handler: Handler, cache_dir: Path = Path(".")) -> JiraClient:
     transport = httpx2.MockTransport(handler)
     http_client = httpx2.AsyncClient(transport=transport)
     auth = BasicTokenAuth("agent@example.com", "super-secret-token")
-    return JiraClient(http_client, auth, BASE_URL)
+    return JiraClient(http_client, auth, BASE_URL, cache_dir)
 
 
 def _recording_handler(response: httpx2.Response) -> tuple[Handler, list[httpx2.Request]]:
@@ -940,3 +942,422 @@ class TestGetComments:
         with pytest.raises(errors.JiraValidationError) as exc_info:
             await client.get_comments("SYN-1", **kwargs)
         assert message_fragment in str(exc_info.value)
+
+
+def _synthetic_attachment(attachment_id: str, filename: str = "diagnostics.log") -> dict[str, Any]:
+    return {
+        "self": f"{BASE_URL}/rest/api/3/attachment/{attachment_id}",
+        "id": attachment_id,
+        "filename": filename,
+        "author": {
+            "self": f"{BASE_URL}/rest/api/3/user?accountId=syn-acc-301",
+            "accountId": "syn-acc-301",
+            "displayName": "Jordan Lee",
+            "active": True,
+        },
+        "created": "2025-08-26T09:55:40.906-0400",
+        "size": 4096,
+        "mimeType": "text/plain",
+        "content": f"{BASE_URL}/rest/api/3/attachment/content/{attachment_id}",
+        "thumbnail": f"{BASE_URL}/rest/api/3/attachment/thumbnail/{attachment_id}",
+    }
+
+
+class TestGetAttachments:
+    async def test_returns_normalized_attachments_from_fixture(self) -> None:
+        fixture = _load("jira_issue_attachments.json")
+        handler, seen = _recording_handler(_json_response(200, fixture))
+        client = _make_client(handler)
+
+        items = await client.get_attachments("SYN-1")
+
+        assert [a.id for a in items] == ["80001", "80002"]
+        assert items[0].filename == "diagnostics.log"
+        assert items[0].mime_type == "text/plain"
+        assert items[0].size == 4096
+        assert items[0].author == User(account_id="syn-acc-301", display_name="Jordan Lee")
+        assert items[0].created == "2025-08-26T13:55:40Z"
+        assert seen[0].url.params["fields"] == "attachment"
+
+    async def test_sends_request_to_the_issue_endpoint(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(200, {"key": "SYN-1", "fields": {"attachment": []}})
+        )
+        client = _make_client(handler)
+
+        await client.get_attachments("SYN-1")
+
+        assert seen[0].url.path == "/rest/api/3/issue/SYN-1"
+
+    async def test_issue_with_no_attachments_returns_empty_list(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"key": "SYN-1", "fields": {"attachment": []}})
+        )
+        client = _make_client(handler)
+
+        assert await client.get_attachments("SYN-1") == []
+
+    async def test_missing_attachment_key_returns_empty_list(self) -> None:
+        handler, _ = _recording_handler(_json_response(200, {"key": "SYN-1", "fields": {}}))
+        client = _make_client(handler)
+
+        assert await client.get_attachments("SYN-1") == []
+
+    async def test_non_object_body_raises_server_error(self) -> None:
+        handler, _ = _recording_handler(_json_response(200, ["not", "an", "object"]))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_attachments("SYN-1")
+
+    async def test_non_object_fields_raises_server_error(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"key": "SYN-1", "fields": "not-an-object"})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_attachments("SYN-1")
+
+    async def test_non_list_attachment_field_raises_server_error(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"key": "SYN-1", "fields": {"attachment": "not-a-list"}})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_attachments("SYN-1")
+
+    async def test_malformed_attachment_dropped_with_sanitized_partial_result(self) -> None:
+        raw = {
+            "key": "SYN-1",
+            "fields": {
+                "attachment": [
+                    _synthetic_attachment("80001"),
+                    {**_synthetic_attachment("80002"), "author": None},
+                ]
+            },
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_attachments("SYN-1")
+
+        assert exc_info.value.problems == ("$.fields.attachment[1].author: expected an object",)
+        assert [a["id"] for a in exc_info.value.partial_result["items"]] == ["80001"]
+
+    async def test_not_found_raises_with_issue_key(self) -> None:
+        fixture = _load("jira_issue_not_found.json")
+        handler, _ = _recording_handler(_json_response(404, fixture))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError) as exc_info:
+            await client.get_attachments("SYN-404")
+
+        assert exc_info.value.issue_key == "SYN-404"
+
+    @pytest.mark.parametrize(
+        ("status", "exc_class"),
+        [
+            (401, errors.JiraAuthenticationError),
+            (403, errors.JiraPermissionError),
+            (404, errors.JiraNotFoundError),
+            (429, errors.JiraRateLimitError),
+            (500, errors.JiraServerError),
+        ],
+    )
+    async def test_error_status_codes_map_to_expected_exception(
+        self, status: int, exc_class: type[Exception]
+    ) -> None:
+        handler, _ = _recording_handler(
+            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(exc_class):
+            await client.get_attachments("SYN-1")
+
+
+def _attachment_download_handler(
+    *,
+    metadata: dict[str, Any] | None = None,
+    metadata_status: int = 200,
+    content_status: int = 200,
+    content_bytes: bytes = b"synthetic attachment bytes",
+    content_type: str = "text/plain",
+    use_redirect: bool = True,
+    signed_url: str = "https://media.example.invalid/signed/download",
+) -> tuple[Handler, list[httpx2.Request]]:
+    """Simulate GET .../attachment/{id} then GET .../attachment/content/{id}.
+
+    `use_redirect` mirrors the live-observed behavior: the content URL
+    returns 303 to a short-lived signed URL on a different host before the
+    real 200 with bytes; `follow_redirects=True` is required to reach it.
+    """
+    if metadata is None:
+        metadata = _synthetic_attachment("80001")
+    attachment_id = str(metadata["id"])
+    metadata_path = f"/rest/api/3/attachment/{attachment_id}"
+    content_path = f"/rest/api/3/attachment/content/{attachment_id}"
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path == metadata_path:
+            return httpx2.Response(metadata_status, json=metadata)
+        if request.url.path == content_path:
+            if content_status != 200:
+                return httpx2.Response(
+                    content_status, json={"errorMessages": ["synthetic failure"], "errors": {}}
+                )
+            if use_redirect:
+                return httpx2.Response(303, headers={"location": signed_url})
+            return httpx2.Response(
+                200, content=content_bytes, headers={"content-type": content_type}
+            )
+        if str(request.url) == signed_url:
+            return httpx2.Response(
+                200, content=content_bytes, headers={"content-type": content_type}
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    return handler, seen
+
+
+class _HangingAsyncStream(httpx2.AsyncByteStream):
+    """Yields one chunk, signals `started`, then hangs until cancelled."""
+
+    def __init__(self, first_chunk: bytes, started: asyncio.Event) -> None:
+        self._first_chunk = first_chunk
+        self._started = started
+
+    async def __aiter__(self):  # type: ignore[override]
+        self._started.set()
+        yield self._first_chunk
+        await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestDownloadAttachment:
+    async def test_normal_download_writes_file_and_returns_result(self, tmp_path: Path) -> None:
+        handler, _ = _attachment_download_handler()
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        expected_path = tmp_path / "80001" / "diagnostics.log"
+        assert result.attachment_id == "80001"
+        assert result.filename == "diagnostics.log"
+        assert result.mime_type == "text/plain"
+        assert result.size == 4096
+        assert result.local_path == str(expected_path)
+        assert expected_path.read_bytes() == b"synthetic attachment bytes"
+        assert not expected_path.with_name("diagnostics.log.part").exists()
+
+    async def test_repeated_download_overwrites_atomically(self, tmp_path: Path) -> None:
+        handler, _ = _attachment_download_handler(content_bytes=b"version one")
+        await _make_client(handler, cache_dir=tmp_path).download_attachment("80001")
+
+        handler2, _ = _attachment_download_handler(content_bytes=b"version two")
+        result = await _make_client(handler2, cache_dir=tmp_path).download_attachment("80001")
+
+        final_path = Path(result.local_path)
+        assert final_path.read_bytes() == b"version two"
+        assert not final_path.with_name(final_path.name + ".part").exists()
+
+    async def test_same_filename_under_different_ids_do_not_clash(self, tmp_path: Path) -> None:
+        handler1, _ = _attachment_download_handler(
+            metadata=_synthetic_attachment("80001", filename="notes.txt"),
+            content_bytes=b"first",
+        )
+        result1 = await _make_client(handler1, cache_dir=tmp_path).download_attachment("80001")
+
+        handler2, _ = _attachment_download_handler(
+            metadata=_synthetic_attachment("80002", filename="notes.txt"),
+            content_bytes=b"second",
+        )
+        result2 = await _make_client(handler2, cache_dir=tmp_path).download_attachment("80002")
+
+        assert result1.local_path != result2.local_path
+        assert Path(result1.local_path).read_bytes() == b"first"
+        assert Path(result2.local_path).read_bytes() == b"second"
+
+    @pytest.mark.parametrize(
+        ("raw_filename", "expected_basename"),
+        [
+            ("../../evil.txt", "evil.txt"),
+            ("..\\..\\evil.txt", "evil.txt"),
+            ("/etc/passwd", "passwd"),
+            ("C:\\evil\\payload.exe", "payload.exe"),
+            ("a/b/c/report.pdf", "report.pdf"),
+        ],
+    )
+    async def test_traversal_filename_sanitized_to_basename(
+        self, tmp_path: Path, raw_filename: str, expected_basename: str
+    ) -> None:
+        handler, _ = _attachment_download_handler(
+            metadata=_synthetic_attachment("80001", filename=raw_filename)
+        )
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        final_path = Path(result.local_path)
+        assert final_path.name == expected_basename
+        assert final_path.parent == tmp_path / "80001"
+        assert final_path.is_relative_to(tmp_path)
+
+    @pytest.mark.parametrize("raw_filename", ["/", "\\", ".", "..", "../..", ".hidden", "..."])
+    async def test_empty_or_hidden_filename_after_sanitization_raises(
+        self, tmp_path: Path, raw_filename: str
+    ) -> None:
+        handler, _ = _attachment_download_handler(
+            metadata=_synthetic_attachment("80001", filename=raw_filename)
+        )
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraValidationError):
+            await client.download_attachment("80001")
+        assert list(tmp_path.rglob("*")) == []
+
+    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "a\\b", ".", "..", ""])
+    async def test_invalid_attachment_id_raises_without_http_call(
+        self, tmp_path: Path, bad_id: str
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError("no HTTP call should be made for an invalid attachment_id")
+
+        client = _make_client(handler, cache_dir=tmp_path)
+        with pytest.raises(errors.JiraValidationError):
+            await client.download_attachment(bad_id)
+
+    async def test_symlink_escape_is_rejected(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        outside = tmp_path_factory.mktemp("outside-cache-target")
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        escape_link = cache_dir / "80001"
+        try:
+            escape_link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlink creation not permitted in this environment")
+
+        handler, _ = _attachment_download_handler()
+        client = _make_client(handler, cache_dir=cache_dir)
+
+        with pytest.raises(errors.JiraValidationError):
+            await client.download_attachment("80001")
+
+        assert list(outside.iterdir()) == []
+
+    async def test_not_found_attachment_raises(self, tmp_path: Path) -> None:
+        handler, _ = _attachment_download_handler(metadata_status=404)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraNotFoundError):
+            await client.download_attachment("80001")
+
+    async def test_non_object_metadata_raises_server_error(self, tmp_path: Path) -> None:
+        handler, _ = _recording_handler(_json_response(200, ["not", "an", "object"]))
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.download_attachment("80001")
+
+    async def test_timeout_mid_download_raises_and_cleans_up_part_file(
+        self, tmp_path: Path
+    ) -> None:
+        metadata = _synthetic_attachment("80001")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/rest/api/3/attachment/80001":
+                return httpx2.Response(200, json=metadata)
+            raise httpx2.ReadTimeout("timed out")
+
+        client = _make_client(handler, cache_dir=tmp_path)
+        with pytest.raises(errors.JiraTimeoutError):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_error_status_from_content_url_raises_and_leaves_no_part_file(
+        self, tmp_path: Path
+    ) -> None:
+        handler, _ = _attachment_download_handler(content_status=404)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraNotFoundError):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*.part")) == []
+
+    async def test_network_failure_mid_download_raises_and_cleans_up_part_file(
+        self, tmp_path: Path
+    ) -> None:
+        metadata = _synthetic_attachment("80001")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/rest/api/3/attachment/80001":
+                return httpx2.Response(200, json=metadata)
+            raise httpx2.ConnectError("connection refused")
+
+        client = _make_client(handler, cache_dir=tmp_path)
+        with pytest.raises(errors.JiraNetworkError):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_cancellation_mid_download_leaves_no_part_file(self, tmp_path: Path) -> None:
+        metadata = _synthetic_attachment("80001")
+        started = asyncio.Event()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/rest/api/3/attachment/80001":
+                return httpx2.Response(200, json=metadata)
+            return httpx2.Response(200, stream=_HangingAsyncStream(b"partial", started))
+
+        client = _make_client(handler, cache_dir=tmp_path)
+        task = asyncio.create_task(client.download_attachment("80001"))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"filename": None},
+            {"filename": ""},
+            {"mimeType": None},
+            {"size": None},
+            {"size": -1},
+            {"size": "4096"},
+            {"content": None},
+            {"content": ""},
+        ],
+    )
+    async def test_malformed_metadata_raises_without_partial_download(
+        self, tmp_path: Path, override: dict[str, Any]
+    ) -> None:
+        metadata = {**_synthetic_attachment("80001"), **override}
+        handler, _ = _attachment_download_handler(metadata=metadata)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.download_attachment("80001")
+        assert list(tmp_path.rglob("*")) == []
+
+    async def test_metadata_id_as_integer_is_accepted(self, tmp_path: Path) -> None:
+        metadata = {**_synthetic_attachment("80001"), "id": 80001}
+        handler, _ = _attachment_download_handler(metadata=metadata)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert result.attachment_id == "80001"
