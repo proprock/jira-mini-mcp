@@ -1,7 +1,7 @@
 [project]
 name = "jira-mini-mcp"
 version = "0.1.0"
-description = "Minimal read-only Jira Cloud MCP server for coding agents"
+description = "Minimal Jira Cloud MCP server for coding agents"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -19,6 +19,11 @@ dev = [
     "ty",
     "pytest",
     "pytest-cov",
+    # Only evals/run_eval.py imports this, and only a deliberate run calls a
+    # model. It sits in dev rather than its own group so `ty check` resolves
+    # it the same way for everyone; the runtime dependencies, and therefore
+    # the published wheel, are unaffected.
+    "anthropic",
 ]
 
 [build-system]

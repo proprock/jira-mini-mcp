@@ -149,6 +149,20 @@ write tool, since `READ_ONLY_MODE` gates on them. Invoke every tool
 through that boundary. Add one stdio subprocess smoke test and verify the shared
 HTTP client and temporary cache each have one lifespan and close exactly once.
 
+## Tool-selection eval
+
+`tests/test_tool_schema_hygiene.py` runs with the normal suite and checks the
+descriptions and schemas a model chooses from: each tool described substantially,
+no two descriptions near-duplicates, every non-obvious parameter explained in
+prose, and each surprising rule stated where a model will read it. A tool added
+without considering those fails it.
+
+`evals/run_eval.py` scores which tool a real model actually picks. It needs a
+model credential and spends money, so it stays outside `uv run pytest` and is run
+deliberately; see `evals/README.md`. Treat one flipped scenario as noise, and
+treat a real failure as a question about the tool descriptions before it is a
+question about the model.
+
 ## Definition of done
 
 Implementation matches the request; public schemas remain intentional; relevant
