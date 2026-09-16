@@ -397,7 +397,9 @@ Attachment listing and downloading are separate operations.
 get_attachments
 ```
 
-returns compact metadata.
+returns `{items}` of compact metadata -- the same collection-wrapping
+convention `search_issues`, `get_comments`, and `get_changelog` already use,
+since a bare top-level array cannot be an MCP `structuredContent` object.
 
 Only when an attachment is relevant does the agent call:
 
