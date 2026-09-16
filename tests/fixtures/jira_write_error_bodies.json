@@ -1,0 +1,21 @@
+{
+  "_provenance": "Error bodies observed live 2026-09-16 on a Jira Cloud site while capturing Phase 14 write evidence against a disposable issue. invalid_transition_id came from POST /rest/api/3/issue/{key}/transitions with a transition id not valid for the issue (400). unknown_field came from PUT /rest/api/3/issue/{key} sending one unknown field together with one malformed known field (400): Jira reported only the unknown field and rejected the whole request, leaving the valid field unapplied. unknown_issue came from POST /rest/api/3/issue/{key}/comment against an issue key that does not exist (404), and does not distinguish a missing issue from a permission denial. All tenant, key, and id values are synthesized.",
+  "invalid_transition_id": {
+    "errorMessages": [
+      "Transition id '999999' is not valid for this issue."
+    ],
+    "errors": {}
+  },
+  "unknown_field": {
+    "errorMessages": [],
+    "errors": {
+      "nosuchfield": "Field 'nosuchfield' cannot be set. It is not on the appropriate screen, or unknown."
+    }
+  },
+  "unknown_issue": {
+    "errorMessages": [
+      "Issue does not exist or you do not have permission to see it."
+    ],
+    "errors": {}
+  }
+}

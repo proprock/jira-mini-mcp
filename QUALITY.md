@@ -142,8 +142,10 @@ Contract tests must also verify:
   failure/cancellation, and are cleaned up at normal server shutdown.
 
 At the MCP boundary, use an in-process client to assert discovery advertises
-exactly the six public tools, including their descriptions, defaults, input
-schemas, output schemas, and read-only/idempotent annotations. Invoke every tool
+exactly the published tools, including their descriptions, defaults, input
+schemas, output schemas, and annotations -- read-only and idempotent for a read
+tool, and honest `readOnlyHint`/`destructiveHint`/`idempotentHint` values for a
+write tool, since `READ_ONLY_MODE` gates on them. Invoke every tool
 through that boundary. Add one stdio subprocess smoke test and verify the shared
 HTTP client and temporary cache each have one lifespan and close exactly once.
 

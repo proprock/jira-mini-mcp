@@ -1800,3 +1800,568 @@ class TestDownloadAttachment:
         result = await client.download_attachment("80001")
 
         assert result.attachment_id == "80001"
+
+
+def _router(routes: dict[tuple[str, str], httpx2.Response]) -> tuple[Handler, list[httpx2.Request]]:
+    """Dispatch on (method, path) so a multi-request flow can be asserted."""
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        key = (request.method, request.url.path)
+        if key not in routes:
+            raise AssertionError(f"unexpected request {key}")
+        return routes[key]
+
+    return handler, seen
+
+
+def _body_of(request: httpx2.Request) -> Any:
+    return json.loads(request.content)
+
+
+_TRANSITIONS_PATH = "/rest/api/3/issue/SYN-1/transitions"
+_ISSUE_PATH = "/rest/api/3/issue/SYN-1"
+_COMMENT_PATH = "/rest/api/3/issue/SYN-1/comment"
+
+
+def _transitions_response() -> httpx2.Response:
+    return _json_response(200, _load("jira_issue_transitions.json"))
+
+
+class TestAddComment:
+    async def test_posts_the_markdown_body_as_adf(self) -> None:
+        handler, seen = _router(
+            {("POST", _COMMENT_PATH): _json_response(201, _load("jira_comment_created.json"))}
+        )
+        client = _make_client(handler)
+
+        await client.add_comment("SYN-1", "Deployed to staging. See `the build`.")
+
+        assert len(seen) == 1
+        assert seen[0].method == "POST"
+        assert seen[0].url.path == _COMMENT_PATH
+        body = _body_of(seen[0])
+        assert list(body) == ["body"]
+        assert body["body"]["type"] == "doc"
+        assert body["body"]["version"] == 1
+        assert body["body"]["content"][0]["content"][1] == {
+            "type": "text",
+            "text": "the build",
+            "marks": [{"type": "code"}],
+        }
+
+    async def test_returns_the_created_comment_in_the_get_comments_shape(self) -> None:
+        handler, _ = _router(
+            {("POST", _COMMENT_PATH): _json_response(201, _load("jira_comment_created.json"))}
+        )
+        client = _make_client(handler)
+
+        comment = await client.add_comment("SYN-1", "anything")
+
+        assert comment.id == "144916"
+        assert comment.author == User(
+            account_id="5b10a2844c20165700ede21g", display_name="Dana Agent"
+        )
+        assert comment.created == "2026-09-16T20:08:19Z"
+        # Jira reports updated == created on a fresh comment; the contract
+        # omits it in that case.
+        assert comment.updated is None
+        assert comment.updated_by is None
+        assert "```python" in comment.body
+        assert "[the build](https://example.invalid/build/41)" in comment.body
+
+    @pytest.mark.parametrize("body", ["", "   ", "\n\t "])
+    async def test_empty_body_is_rejected_before_any_request(self, body: str) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.add_comment("SYN-1", body)
+
+        assert seen == []
+        assert exc_info.value.operation == "add_comment"
+        assert exc_info.value.issue_key == "SYN-1"
+        assert "empty" in str(exc_info.value).lower()
+
+    async def test_non_text_body_is_rejected_before_any_request(self) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError):
+            await client.add_comment("SYN-1", {"type": "doc"})  # ty: ignore[invalid-argument-type]
+        assert seen == []
+
+    async def test_malformed_created_comment_is_an_incomplete_response(self) -> None:
+        handler, _ = _router({("POST", _COMMENT_PATH): _json_response(201, {"id": "1"})})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.add_comment("SYN-1", "text")
+        assert exc_info.value.problems
+
+    async def test_unknown_issue_maps_to_not_found(self) -> None:
+        handler, _ = _router(
+            {
+                ("POST", _COMMENT_PATH): _json_response(
+                    404, _load("jira_write_error_bodies.json")["unknown_issue"]
+                )
+            }
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError) as exc_info:
+            await client.add_comment("SYN-1", "text")
+        assert "SYN-1" in str(exc_info.value)
+
+
+class TestTransitionIssue:
+    async def test_resolves_by_transition_name_and_posts_only_the_id(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.transition_issue("SYN-1", "In Progress")
+
+        assert [request.method for request in seen] == ["GET", "POST"]
+        assert _body_of(seen[1]) == {"transition": {"id": "21"}}
+        assert result.key == "SYN-1"
+        assert result.transition.id == "21"
+        assert result.transition.name == "In Progress"
+        # The transition's name is not its target status name.
+        assert result.transition.status == {
+            "id": "10001",
+            "name": "In Development",
+            "category": "indeterminate",
+        }
+
+    async def test_resolves_by_target_status_name(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.transition_issue("SYN-1", "In Development")
+
+        assert result.transition.id == "21"
+        assert _body_of(seen[1]) == {"transition": {"id": "21"}}
+
+    @pytest.mark.parametrize("target", ["in progress", "  IN PROGRESS  ", "In Progress"])
+    async def test_matching_ignores_case_and_surrounding_whitespace(self, target: str) -> None:
+        handler, _ = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.transition_issue("SYN-1", target)
+        assert result.transition.id == "21"
+
+    async def test_transition_name_wins_over_an_ambiguous_status_name(self) -> None:
+        # "Ready" is both a transition name and the status two transitions
+        # reach; the transition name resolves it exactly.
+        handler, _ = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.transition_issue("SYN-1", "Ready")
+        assert result.transition.id == "2"
+
+    async def test_ambiguous_status_name_names_both_candidates(self) -> None:
+        payload = _load("jira_issue_transitions.json")
+        # Rename the "Ready" transition so only the status name can match,
+        # and two transitions reach it.
+        payload["transitions"][2]["name"] = "Mark ready"
+        handler, seen = _router({("GET", _TRANSITIONS_PATH): _json_response(200, payload)})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.transition_issue("SYN-1", "Ready")
+
+        message = str(exc_info.value)
+        assert "Mark ready" in message
+        assert "Prepared" in message
+        assert [request.method for request in seen] == ["GET"]
+
+    async def test_no_match_lists_every_available_transition(self) -> None:
+        handler, seen = _router({("GET", _TRANSITIONS_PATH): _transitions_response()})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.transition_issue("SYN-1", "Shipped")
+
+        message = str(exc_info.value)
+        assert "Shipped" in message
+        for name in ("To Do", "In Progress", "Ready", "Prepared", "Done"):
+            assert name in message
+        assert "In Development" in message
+        assert [request.method for request in seen] == ["GET"]
+
+    async def test_empty_transition_list_is_actionable(self) -> None:
+        handler, _ = _router(
+            {("GET", _TRANSITIONS_PATH): _json_response(200, {"expand": "", "transitions": []})}
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.transition_issue("SYN-1", "Done")
+        assert "No transition is available" in str(exc_info.value)
+
+    @pytest.mark.parametrize("target", ["", "   ", None])
+    async def test_missing_target_is_rejected_before_any_request(self, target: Any) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError):
+            await client.transition_issue("SYN-1", target)
+        assert seen == []
+
+    async def test_comment_travels_in_the_same_post(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        await client.transition_issue("SYN-1", "Done", comment="Shipped in **v2**.")
+
+        assert [request.method for request in seen] == ["GET", "POST"]
+        body = _body_of(seen[1])
+        assert body["transition"] == {"id": "31"}
+        added = body["update"]["comment"][0]["add"]["body"]
+        assert added["type"] == "doc"
+        assert added["content"][0]["content"][1] == {
+            "type": "text",
+            "text": "v2",
+            "marks": [{"type": "strong"}],
+        }
+
+    async def test_empty_comment_is_rejected_before_the_transition_is_posted(self) -> None:
+        handler, seen = _router({("GET", _TRANSITIONS_PATH): _transitions_response()})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError):
+            await client.transition_issue("SYN-1", "Done", comment="   ")
+        assert [request.method for request in seen] == ["GET"]
+
+    async def test_invalid_transition_id_reports_jiras_reason(self) -> None:
+        handler, _ = _router(
+            {
+                ("GET", _TRANSITIONS_PATH): _transitions_response(),
+                ("POST", _TRANSITIONS_PATH): _json_response(
+                    400, _load("jira_write_error_bodies.json")["invalid_transition_id"]
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.transition_issue("SYN-1", "Done")
+        assert "not valid for this issue" in str(exc_info.value)
+
+    async def test_malformed_transition_stops_the_move(self) -> None:
+        payload = _load("jira_issue_transitions.json")
+        del payload["transitions"][1]["name"]
+        handler, seen = _router({("GET", _TRANSITIONS_PATH): _json_response(200, payload)})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.transition_issue("SYN-1", "Done")
+
+        assert exc_info.value.problems == ("$.transitions[1].name: expected a non-empty string",)
+        assert [request.method for request in seen] == ["GET"]
+        assert exc_info.value.partial_result["key"] == "SYN-1"
+
+    async def test_two_transitions_sharing_one_name_are_ambiguous(self) -> None:
+        # A workflow may name two transitions alike; picking either silently
+        # would move the issue somewhere the caller did not ask for.
+        payload = _load("jira_issue_transitions.json")
+        payload["transitions"][3]["name"] = "Ready"
+        handler, seen = _router({("GET", _TRANSITIONS_PATH): _json_response(200, payload)})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.transition_issue("SYN-1", "Ready")
+
+        message = str(exc_info.value)
+        assert message.count("Ready ->") == 2
+        assert [request.method for request in seen] == ["GET"]
+
+    async def test_a_non_object_transition_entry_stops_the_move(self) -> None:
+        payload = _load("jira_issue_transitions.json")
+        payload["transitions"][1] = "not an object"
+        handler, _ = _router({("GET", _TRANSITIONS_PATH): _json_response(200, payload)})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.transition_issue("SYN-1", "Done")
+
+        assert exc_info.value.problems == ("$.transitions[1]: expected an object",)
+
+    async def test_unexpected_transitions_shape_is_a_server_error(self) -> None:
+        handler, _ = _router({("GET", _TRANSITIONS_PATH): _json_response(200, {"nope": 1})})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.transition_issue("SYN-1", "Done")
+
+
+class TestUpdateIssue:
+    async def test_puts_only_the_named_fields(self) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+        client = _make_client(handler)
+
+        result = await client.update_issue("SYN-1", {"summary": "New title", "labels": ["triage"]})
+
+        assert len(seen) == 1
+        assert seen[0].method == "PUT"
+        assert seen[0].url.path == _ISSUE_PATH
+        assert _body_of(seen[0]) == {"fields": {"summary": "New title", "labels": ["triage"]}}
+        assert result.key == "SYN-1"
+        assert result.updated_fields == ("labels", "summary")
+
+    async def test_description_is_converted_from_markdown(self) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+        client = _make_client(handler)
+
+        await client.update_issue("SYN-1", {"description": "# Title\n\nBody."})
+
+        description = _body_of(seen[0])["fields"]["description"]
+        assert description["type"] == "doc"
+        assert description["content"][0]["type"] == "heading"
+
+    @pytest.mark.parametrize(
+        ("field", "value", "expected"),
+        [
+            ("priority", "High", {"name": "High"}),
+            ("components", ["api", "web"], [{"name": "api"}, {"name": "web"}]),
+            ("parent", "SYN-9", {"key": "SYN-9"}),
+            ("duedate", "2026-12-31", "2026-12-31"),
+            ("assignee", "5b10a2844c20165700ede21g", {"accountId": "5b10a2844c20165700ede21g"}),
+            ("customfield_10011", {"value": "raw"}, {"value": "raw"}),
+            ("unknown_field", [1, 2], [1, 2]),
+        ],
+    )
+    async def test_field_coercion(self, field: str, value: Any, expected: Any) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+        client = _make_client(handler)
+
+        await client.update_issue("SYN-1", {field: value})
+
+        assert _body_of(seen[0])["fields"][field] == expected
+
+    @pytest.mark.parametrize("field", ["assignee", "description", "priority", "parent", "duedate"])
+    async def test_null_clears_a_clearable_field(self, field: str) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+        client = _make_client(handler)
+
+        await client.update_issue("SYN-1", {field: None})
+
+        assert _body_of(seen[0])["fields"] == {field: None}
+
+    async def test_assignee_me_resolves_through_myself_once(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", "/rest/api/3/myself"): _json_response(200, _load("jira_myself.json")),
+                ("PUT", _ISSUE_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        await client.update_issue("SYN-1", {"assignee": "me"})
+        await client.update_issue("SYN-1", {"assignee": "ME"})
+
+        assert [request.url.path for request in seen] == [
+            "/rest/api/3/myself",
+            _ISSUE_PATH,
+            _ISSUE_PATH,
+        ]
+        for request in (seen[1], seen[2]):
+            assert _body_of(request)["fields"]["assignee"] == {
+                "accountId": "5b10a2844c20165700ede21g"
+            }
+
+    async def test_myself_without_an_account_id_is_actionable(self) -> None:
+        handler, _ = _router(
+            {("GET", "/rest/api/3/myself"): _json_response(200, {"displayName": "Dana"})}
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError) as exc_info:
+            await client.update_issue("SYN-1", {"assignee": "me"})
+        assert "account id" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("field", "tool"),
+        [("status", "transition_issue"), ("comment", "add_comment")],
+    )
+    async def test_rejected_field_names_the_tool_that_does_it(self, field: str, tool: str) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.update_issue("SYN-1", {field: "anything"})
+
+        assert tool in str(exc_info.value)
+        assert seen == []
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "attachment",
+            "issuelinks",
+            "worklog",
+            "project",
+            "issuetype",
+            "key",
+            "id",
+            "created",
+            "updated",
+            "resolutiondate",
+        ],
+    )
+    async def test_unsupported_fields_are_rejected_before_any_request(self, field: str) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.update_issue("SYN-1", {field: "anything"})
+
+        assert field in str(exc_info.value)
+        assert seen == []
+
+    @pytest.mark.parametrize("fields", [{}, None, []])
+    async def test_empty_fields_is_rejected_before_any_request(self, fields: Any) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.update_issue("SYN-1", fields)
+
+        assert "at least one field" in str(exc_info.value)
+        assert seen == []
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("summary", 7),
+            ("summary", ""),
+            ("labels", "triage"),
+            ("labels", ["", "ok"]),
+            ("components", [{"name": "api"}]),
+            ("description", 7),
+            ("description", "   "),
+            ("duedate", "31/12/2026"),
+            ("duedate", 20261231),
+            ("assignee", 7),
+            ("priority", ["High"]),
+        ],
+    )
+    async def test_bad_value_is_rejected_before_any_request(self, field: str, value: Any) -> None:
+        handler, seen = _router({})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.update_issue("SYN-1", {field: value})
+
+        assert field in str(exc_info.value)
+        assert seen == []
+
+    async def test_jira_field_error_detail_reaches_the_caller(self) -> None:
+        handler, _ = _router(
+            {
+                ("PUT", _ISSUE_PATH): _json_response(
+                    400, _load("jira_write_error_bodies.json")["unknown_field"]
+                )
+            }
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await client.update_issue("SYN-1", {"nosuchfield": "x"})
+
+        message = str(exc_info.value)
+        assert "nosuchfield" in message
+        assert "not on the appropriate screen" in message
+
+
+class TestWriteErrorMappingAndRedaction:
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (401, errors.JiraAuthenticationError),
+            (403, errors.JiraPermissionError),
+            (404, errors.JiraNotFoundError),
+            (429, errors.JiraRateLimitError),
+            (500, errors.JiraServerError),
+        ],
+    )
+    async def test_status_mapping_on_a_write_path(
+        self, status: int, expected: type[Exception]
+    ) -> None:
+        handler, _ = _router({("PUT", _ISSUE_PATH): _json_response(status, {"errorMessages": []})})
+        client = _make_client(handler)
+
+        with pytest.raises(expected):
+            await client.update_issue("SYN-1", {"summary": "x"})
+
+    async def test_write_failures_never_leak_url_or_credentials(self) -> None:
+        # Jira's own error text can carry a link, and a link carries the
+        # tenant host.
+        hostile = {
+            "errorMessages": [f"See {BASE_URL}/browse/SYN-1 for details."],
+            "errors": {"assignee": f"Try {BASE_URL}/jira/people instead."},
+        }
+        handler, _ = _router({("PUT", _ISSUE_PATH): _json_response(403, hostile)})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            await client.update_issue("SYN-1", {"summary": "x"})
+
+        message = str(exc_info.value)
+        assert BASE_URL not in message
+        assert "synthetic-tenant" not in message
+        assert "http" not in message
+        # The actionable part of Jira's message survives.
+        assert "for details" in message
+        assert "assignee" in message
+
+    async def test_network_and_timeout_failures_on_writes(self) -> None:
+        def timeout_handler(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ReadTimeout("timed out")
+
+        client = _make_client(timeout_handler)
+        with pytest.raises(errors.JiraTimeoutError) as exc_info:
+            await client.add_comment("SYN-1", "text")
+        assert exc_info.value.operation == "add_comment"
+
+        def network_handler(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ConnectError("refused")
+
+        client = _make_client(network_handler)
+        with pytest.raises(errors.JiraNetworkError):
+            await client.update_issue("SYN-1", {"summary": "x"})
+
+    async def test_a_failed_write_is_attempted_exactly_once(self) -> None:
+        # Nothing may replay a POST: a retried comment posts twice.
+        handler, seen = _router({("POST", _COMMENT_PATH): _json_response(500, {})})
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.add_comment("SYN-1", "text")
+        assert len(seen) == 1

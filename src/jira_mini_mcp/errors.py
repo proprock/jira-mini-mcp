@@ -6,10 +6,13 @@ exception types; `jira.py` calls it instead of reimplementing the mapping.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx2
+
+_URL_PATTERN = re.compile(r"(?:https?|ftp)://\S+", re.IGNORECASE)
 
 
 class JiraMiniError(Exception):
@@ -109,7 +112,10 @@ class JiraIncompleteResponseError(JiraMiniError):
 def _extract_jira_detail(response: httpx2.Response) -> str | None:
     """Pull human-readable text out of Jira's error JSON body, if any.
 
-    Only extracted text strings are used; the raw body is never surfaced.
+    Only extracted text strings are used; the raw body is never surfaced,
+    and any URL inside those strings is replaced. Jira's own error text can
+    carry links, and a link carries the tenant's host -- which this
+    project never puts in front of a model.
     """
     try:
         body = response.json()
@@ -127,7 +133,9 @@ def _extract_jira_detail(response: httpx2.Response) -> str | None:
         parts.extend(
             f"{field}: {text}" for field, text in field_errors.items() if isinstance(text, str)
         )
-    return "; ".join(parts) if parts else None
+    if not parts:
+        return None
+    return _URL_PATTERN.sub("[link removed]", "; ".join(parts))
 
 
 def _parse_retry_after(response: httpx2.Response) -> float | None:

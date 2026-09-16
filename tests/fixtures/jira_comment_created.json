@@ -1,0 +1,81 @@
+{
+  "_provenance": "Response shape observed live 2026-09-16 against POST /rest/api/3/issue/{key}/comment with body {\"body\": <ADF doc>} on a Jira Cloud site, posting to a disposable issue created for this purpose. Confirmed: the status is 201 with content-type application/json;charset=UTF-8; the response body is one comment object identical in shape to an item of GET /issue/{key}/comment (self, id, author, body, updateAuthor, created, updated, jsdPublic); created and updated are equal on a freshly created comment; and Jira echoes the submitted ADF document back unchanged, including hardBreak nodes and codeBlock language attributes. All tenant, account, id, timestamp, and content values are synthesized.",
+  "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/54296/comment/144916",
+  "id": "144916",
+  "author": {
+    "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=5b10a2844c20165700ede21g",
+    "accountId": "5b10a2844c20165700ede21g",
+    "emailAddress": "agent@example.com",
+    "avatarUrls": {
+      "48x48": "https://synthetic-avatars.example.invalid/48.png",
+      "24x24": "https://synthetic-avatars.example.invalid/24.png",
+      "16x16": "https://synthetic-avatars.example.invalid/16.png",
+      "32x32": "https://synthetic-avatars.example.invalid/32.png"
+    },
+    "displayName": "Dana Agent",
+    "active": true,
+    "timeZone": "America/New_York",
+    "accountType": "atlassian"
+  },
+  "body": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Deployed to staging. See "
+          },
+          {
+            "type": "text",
+            "text": "the build",
+            "marks": [
+              {
+                "type": "link",
+                "attrs": {
+                  "href": "https://example.invalid/build/41"
+                }
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "."
+          }
+        ]
+      },
+      {
+        "type": "codeBlock",
+        "attrs": {
+          "language": "python"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "retry(attempts=3)"
+          }
+        ]
+      }
+    ]
+  },
+  "updateAuthor": {
+    "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=5b10a2844c20165700ede21g",
+    "accountId": "5b10a2844c20165700ede21g",
+    "emailAddress": "agent@example.com",
+    "avatarUrls": {
+      "48x48": "https://synthetic-avatars.example.invalid/48.png",
+      "24x24": "https://synthetic-avatars.example.invalid/24.png",
+      "16x16": "https://synthetic-avatars.example.invalid/16.png",
+      "32x32": "https://synthetic-avatars.example.invalid/32.png"
+    },
+    "displayName": "Dana Agent",
+    "active": true,
+    "timeZone": "America/New_York",
+    "accountType": "atlassian"
+  },
+  "created": "2026-09-16T16:08:19.960-0400",
+  "updated": "2026-09-16T16:08:19.960-0400",
+  "jsdPublic": true
+}

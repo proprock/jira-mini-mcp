@@ -1,6 +1,6 @@
 # jira-mini-mcp
 
-A small, read-only Jira Cloud REST API v3 MCP server designed specifically for coding agents such as Codex and Claude Code.
+A small Jira Cloud REST API v3 MCP server designed specifically for coding agents such as Codex and Claude Code: broad read access, and a deliberately narrow write surface.
 
 `jira-mini-mcp` intentionally exposes only a focused set of Jira capabilities instead of attempting to mirror the entire Jira REST API or the broader Atlassian product ecosystem.
 
@@ -10,7 +10,7 @@ The core idea is simple:
 
 This design follows Anthropic's tool-design guidance for agent systems: keep toolsets small, role-scoped, clearly differentiated, and focused on high-impact workflows. Anthropic's Claude Certified Architect materials also emphasize avoiding large tool registries and distributing capabilities into small, focused toolsets.
 
-`jira-mini-mcp` applies that principle as a six-tool Jira-specific interface.
+`jira-mini-mcp` applies that principle as a nine-tool Jira-specific interface.
 
 ## Why a small Jira MCP?
 
@@ -42,9 +42,9 @@ The goal of `jira-mini-mcp` is not maximum Jira coverage.
 
 The goal is maximum usefulness per tool.
 
-## Six tools
+## Nine tools
 
-The initial server exposes only:
+The server exposes only:
 
 | Tool | Purpose |
 |---|---|
@@ -54,6 +54,11 @@ The initial server exposes only:
 | `get_attachments` | List attachment metadata |
 | `download_attachment` | Download one attachment |
 | `get_changelog` | Retrieve issue history |
+| `add_comment` | Post one Markdown comment |
+| `transition_issue` | Move an issue through its workflow |
+| `update_issue` | Set issue fields |
+
+The first six read; the last three are the entire write surface.
 
 This is enough for the primary coding-agent workflow:
 
@@ -71,6 +76,15 @@ understand current state
     |
     v
 work on code
+    |
+    v
+report back
+    |
+    +--> comment with the result
+    |
+    +--> move the issue
+    |
+    +--> correct a field
 ```
 
 The server does not expose unrelated Jira functionality just because the Jira API supports it.
@@ -144,7 +158,7 @@ A smaller interface provides several advantages.
 
 Tool definitions consume tokens.
 
-Six compact schemas are inexpensive enough to remain available throughout an agent session without requiring a separate tool-discovery workflow.
+Nine compact schemas are inexpensive enough to remain available throughout an agent session without requiring a separate tool-discovery workflow.
 
 The context budget can instead be used for:
 
@@ -411,22 +425,29 @@ This avoids putting binary data or unnecessary attachment contents into the cont
 
 Downloaded files are placed in an automatically managed process-scoped temporary cache. No download-directory configuration is required, and the cache is removed when the MCP server shuts down normally.
 
-## Read-only by design
+## A narrow write surface
 
-The MVP intentionally does not include:
+Reading a ticket and never answering it leaves the loop open, so three tools close it: comment, move, correct a field. Nothing else writes.
+
+The server intentionally does not include:
 
 ```text
 create_issue
-update_issue
-add_comment
-transition_issue
+link_issues
+add_attachment
+delete_comment
+log_work
 ```
 
-The first objective is reliable context retrieval.
+Each was weighed against the same bar as every other tool: a concrete thing an agent needs while working a ticket. Issue creation needs per-project, per-type required-field discovery and is a feature in its own right. A link, or a request for one, fits in a comment.
 
-Read operations also provide a smaller security surface and make it safer to give coding agents access without implicitly granting them the ability to modify Jira state.
+Three details are worth knowing before an agent writes:
 
-Write operations can be introduced later if concrete workflows justify them.
+- `transition_issue` takes a transition name or a target status name, not an id. Those differ in real workflows -- a transition called `In Progress` can produce a status called `In Development` -- and two transitions can reach one status, so prefer the transition name. When nothing matches, the error lists every available transition and where it leads; that listing is the discovery mechanism, which is why there is no separate `get_transitions` tool.
+- `update_issue` replaces `labels` and `components` wholesale. There is no add or remove verb, so read the issue first if you mean to add one value.
+- Markdown in a comment or description is converted to Jira's rich text. Headings, lists, fenced code, inline marks, and links survive; anything else stays literal rather than being guessed at.
+
+Every write tool is annotated `readOnlyHint=false`, with honest `destructiveHint` and `idempotentHint` values. Setting `READ_ONLY_MODE=true` registers the six read tools alone, so an operator can hand an agent this server without handing it the ability to change Jira. The Jira API token's own account permissions still apply on top of that.
 
 ## Stack
 
@@ -521,6 +542,14 @@ The MVP requires exactly three values:
 | `JIRA_API_TOKEN` | Jira Cloud API token |
 
 The server uses Jira Cloud Basic authentication. Jira Server/Data Center, PAT/Bearer authentication, and OAuth are not supported by the MVP. Configuration is validated at startup, and errors identify the missing setting without printing its value or the configured Jira URL.
+
+One optional value exists:
+
+| Variable | Meaning |
+|---|---|
+| `READ_ONLY_MODE` | `true`, `1`, or `on` registers only the six read tools; `false`, `0`, `off`, empty, or absent registers all nine |
+
+The comparison ignores case and surrounding space. Any other value stops startup with an error naming the variable and the accepted spellings, so a typo cannot quietly re-enable the write tools.
 
 For Codex, register the stdio server with:
 

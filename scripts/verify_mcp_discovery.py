@@ -1,4 +1,4 @@
-"""Verify that a runnable jira-mini-mcp command exposes exactly the six tools.
+"""Verify that a runnable jira-mini-mcp command exposes exactly the published tools.
 
 Used by CI's packaging job to check a clean-environment wheel/sdist install,
 and for manual verification of `uvx --from git+https://github.com/proprock/jira-mini-mcp`
@@ -22,6 +22,9 @@ EXPECTED_TOOLS = frozenset(
         "get_attachments",
         "download_attachment",
         "get_changelog",
+        "add_comment",
+        "transition_issue",
+        "update_issue",
     }
 )
 
@@ -38,7 +41,8 @@ async def _verify(command: str, args: list[str]) -> None:
         tools = {tool.name for tool in (await client.list_tools()).tools}
     if tools != EXPECTED_TOOLS:
         raise SystemExit(f"tool discovery mismatch: got {sorted(tools)}")
-    print(f"OK: `{' '.join([command, *args])}` exposes exactly the six expected tools")
+    invocation = " ".join([command, *args])
+    print(f"OK: `{invocation}` exposes exactly the {len(EXPECTED_TOOLS)} expected tools")
 
 
 def main() -> None:

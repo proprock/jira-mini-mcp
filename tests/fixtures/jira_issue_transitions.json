@@ -1,0 +1,126 @@
+{
+  "_provenance": "Envelope and transition-object shape observed live 2026-09-16 against GET /rest/api/3/issue/{key}/transitions on a Jira Cloud site (21 transitions available on the observed disposable issue). Confirmed: the envelope is {expand, transitions}; each transition carries id, name, to (a full status resource with statusCategory), hasScreen, isGlobal, isInitial, isAvailable, isConditional, and isLooped; no `fields` key is present unless expand=transitions.fields is requested. Two behaviors reproduced below because the resolution logic depends on them: a transition whose name differs from its target status name, and two distinct transitions reaching one status. All tenant, id, and name values are synthesized.",
+  "expand": "transitions",
+  "transitions": [
+    {
+      "id": "11",
+      "name": "To Do",
+      "to": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/10000",
+        "description": "",
+        "iconUrl": "https://synthetic-tenant.atlassian.net/",
+        "name": "To Do",
+        "id": "10000",
+        "statusCategory": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "isInitial": false,
+      "isAvailable": true,
+      "isConditional": false,
+      "isLooped": false
+    },
+    {
+      "id": "21",
+      "name": "In Progress",
+      "to": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/10001",
+        "description": "",
+        "iconUrl": "https://synthetic-tenant.atlassian.net/",
+        "name": "In Development",
+        "id": "10001",
+        "statusCategory": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/4",
+          "id": 4,
+          "key": "indeterminate",
+          "colorName": "yellow",
+          "name": "In Progress"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "isInitial": false,
+      "isAvailable": true,
+      "isConditional": false,
+      "isLooped": false
+    },
+    {
+      "id": "2",
+      "name": "Ready",
+      "to": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/10015",
+        "description": "",
+        "iconUrl": "https://synthetic-tenant.atlassian.net/",
+        "name": "Ready",
+        "id": "10015",
+        "statusCategory": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "isInitial": false,
+      "isAvailable": true,
+      "isConditional": false,
+      "isLooped": false
+    },
+    {
+      "id": "3",
+      "name": "Prepared",
+      "to": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/10015",
+        "description": "",
+        "iconUrl": "https://synthetic-tenant.atlassian.net/",
+        "name": "Ready",
+        "id": "10015",
+        "statusCategory": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "isInitial": false,
+      "isAvailable": true,
+      "isConditional": false,
+      "isLooped": false
+    },
+    {
+      "id": "31",
+      "name": "Done",
+      "to": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/10002",
+        "description": "",
+        "iconUrl": "https://synthetic-tenant.atlassian.net/",
+        "name": "Done",
+        "id": "10002",
+        "statusCategory": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/statuscategory/3",
+          "id": 3,
+          "key": "done",
+          "colorName": "green",
+          "name": "Done"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "isInitial": false,
+      "isAvailable": true,
+      "isConditional": false,
+      "isLooped": false
+    }
+  ]
+}

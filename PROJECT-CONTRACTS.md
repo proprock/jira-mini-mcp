@@ -7,13 +7,13 @@ targets Jira Cloud REST API v3 only and is optimized for large issue histories,
 inexpensive recent-activity retrieval, explicit pagination, low runtime
 overhead, and direct installation from GitHub.
 
-MVP non-goals are Jira Server/Data Center compatibility, OAuth, issue creation
-or updates, comments, transitions, worklogs, sprint or board management, Jira
-administration, and Confluence integration.
+Non-goals are Jira Server/Data Center compatibility, OAuth, issue creation,
+issue links, attachment upload, comment editing or deletion, worklogs, sprint or
+board management, Jira administration, and Confluence integration.
 
 ## MCP tools
 
-The MVP exposes exactly these tools:
+The server exposes exactly these tools:
 
 ```text
 search_issues
@@ -22,9 +22,14 @@ get_comments
 get_attachments
 download_attachment
 get_changelog
+add_comment
+transition_issue
+update_issue
 ```
 
-Do not add a tool without a concrete agent use case.
+Do not add a tool without a concrete agent use case. The first six read; the
+last three write and are the entire write surface. `READ_ONLY_MODE` registers
+the read tools alone.
 
 ## Common response conventions
 
@@ -197,6 +202,129 @@ the oldest in ascending mode, regardless of Jira's upstream oldest-first order.
 A changelog entry contains `id`, compact `author`, UTC `created`, and `changes`.
 Each change contains human-readable `field`, `from`, and `to`; include an
 optional `field_id` for a custom field. Omit Jira's internal old/new value IDs.
+
+## Write tools
+
+Three tools change Jira state. They are annotated so `READ_ONLY_MODE` can
+withhold them, and their annotations state what they really do: `add_comment`
+only appends, `update_issue` overwrites but repeats into the same state, and
+`transition_issue` overwrites and is not repeatable.
+
+Write tools do not weaken any read rule. Their failures are MCP tool errors,
+their messages name the cause and the correction, and neither a message nor a
+result carries a Jira URL, credential, or raw response body.
+
+### `add_comment`
+
+Signature:
+
+```text
+add_comment(issue_key, body)
+```
+
+`body` is Markdown and is converted to Jira Cloud ADF. The supported set is the
+one `get_comments` renders back: paragraphs, ATX headings, bullet and ordered
+lists, blockquotes, fenced code blocks with an optional language, hard breaks,
+and the strong, emphasis, inline-code, and link marks. Anything else — tables,
+images, raw HTML, reference links, an unclosed delimiter — stays literal text
+rather than being guessed at. An empty or whitespace-only body is a validation
+error, not an empty comment.
+
+The result is exactly the `Comment` shape `get_comments` returns: `id`, compact
+`author`, Markdown `body`, UTC `created`, and optional `updated`/`updated_by`.
+Jira reports `updated` equal to `created` on a new comment, so both optional
+values are omitted. There is no tool to edit or delete a comment.
+
+### `transition_issue`
+
+Signature:
+
+```text
+transition_issue(issue_key, to, comment=None)
+```
+
+Jira accepts only a workflow-specific transition id, so `to` is resolved against
+the issue's available transitions: by transition name first, then by target
+status name, comparing case-insensitively after trimming surrounding space. Both
+steps are necessary and the order matters. A transition's name routinely differs
+from the status it produces — a transition named `In Progress` can lead to a
+status named `In Development` — and two differently named transitions can reach
+one status, in which case only the transition name distinguishes them.
+
+A `to` that matches nothing is a validation error listing every available
+transition and the status it leads to; that listing is the tool's discovery
+channel, which is why there is no separate `get_transitions` tool. A `to` that
+matches more than one transition is a validation error naming the candidates,
+never a guess. If the issue offers no transition at all, the error says so
+rather than reporting a missing match.
+
+`comment` is Markdown, converted exactly as `add_comment` converts a body, and
+travels in the same request as the move so the two cannot land apart.
+
+The result separates the transition from its outcome, because conflating them is
+the mistake the resolution rules exist to prevent:
+
+```json
+{
+  "key": "ABC-123",
+  "transition": {"id": "21", "name": "In Progress"},
+  "status": {"id": "10001", "name": "In Development", "category": "indeterminate"}
+}
+```
+
+`status` uses the compact status shape. The available transitions are read
+immediately before the move, so a workflow change in between surfaces as Jira's
+own error. A malformed transition in the list stops the move instead of
+resolving against a partial list, which could report a missing match for a
+transition that exists.
+
+### `update_issue`
+
+Signature:
+
+```text
+update_issue(issue_key, fields)
+```
+
+`fields` mirrors the read side: what `get_issue` returns can be written back.
+Known fields take friendly values; unknown and `customfield_*` values pass
+through as raw Jira JSON, exactly as they survive normalization on the way out.
+
+```text
+summary      text
+description  Markdown, or null to clear
+assignee     an account id, the literal "me", or null to unassign
+labels       a list of strings, replacing the whole list
+components   a list of names, replacing the whole list
+priority     a name, or null
+parent       an issue key, or null
+duedate      YYYY-MM-DD, or null
+```
+
+`labels` and `components` replace their entire list; there is no add or remove
+verb. A caller adding one value reads the issue first.
+
+`assignee: "me"` resolves through the configured account's own identity, fetched
+once per process, because an agent asked to take a ticket cannot know its own
+account id.
+
+An empty `fields` object is a validation error naming the requirement, not a
+no-op request. `status` and `comment` are rejected with a message naming
+`transition_issue` and `add_comment`; `attachment`, `issuelinks`, `worklog`,
+`project`, `issuetype`, `key`, `id`, `created`, `updated`, and `resolutiondate`
+are rejected as unsupported, with `issuelinks` pointing at `add_comment` as the
+place to record a link or ask for one. Every rejection happens before any
+request is sent.
+
+The result is the issue key and the field names that were sent:
+
+```json
+{"key": "ABC-123", "updated_fields": ["labels", "summary"]}
+```
+
+The issue is not re-fetched. A caller that wants the resulting state calls
+`get_issue`, which keeps the write to one request and avoids implying that the
+returned values were read back from Jira.
 
 ## Pagination and responses
 
