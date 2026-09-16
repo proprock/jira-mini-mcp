@@ -1,0 +1,80 @@
+{
+  "_provenance": "Shape observed live 2026-09-16 against a read-only GET /rest/api/3/search/jql on a Jira Cloud test site (bounded JQL, maxResults=1, fields=summary,status,issuetype,priority,assignee,updated,project). Response has isLast:false with nextPageToken present when more results remain. All tenant, account, project, and content values below are synthesized; only the envelope shape and key names are real.",
+  "issues": [
+    {
+      "expand": "operations,versionedRepresentations",
+      "id": "10101",
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10101",
+      "key": "SYN-201",
+      "fields": {
+        "summary": "Search index falls behind after bulk import",
+        "issuetype": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10001",
+          "id": "10001",
+          "name": "Bug",
+          "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/bug.svg"
+        },
+        "project": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/project/10000",
+          "id": "10000",
+          "key": "SYN",
+          "name": "Synthetic Project"
+        },
+        "assignee": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-101",
+          "accountId": "syn-acc-101",
+          "emailAddress": "morgan.diaz@example.invalid",
+          "displayName": "Morgan Diaz"
+        },
+        "priority": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/2",
+          "id": "2",
+          "name": "High"
+        },
+        "status": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
+          "id": "3",
+          "name": "In Progress",
+          "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+        },
+        "updated": "2026-09-14T10:05:00.000-0400"
+      }
+    },
+    {
+      "expand": "operations,versionedRepresentations",
+      "id": "10102",
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10102",
+      "key": "SYN-202",
+      "fields": {
+        "summary": "Add retry with backoff to webhook dispatcher",
+        "issuetype": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10004",
+          "id": "10004",
+          "name": "Task",
+          "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/task.svg"
+        },
+        "project": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/project/10000",
+          "id": "10000",
+          "key": "SYN",
+          "name": "Synthetic Project"
+        },
+        "assignee": null,
+        "priority": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/3",
+          "id": "3",
+          "name": "Medium"
+        },
+        "status": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/1",
+          "id": "1",
+          "name": "To Do",
+          "statusCategory": { "id": 2, "key": "new", "name": "To Do" }
+        },
+        "updated": "2026-09-13T08:00:00.000-0400"
+      }
+    }
+  ],
+  "nextPageToken": "synthetic-cursor-page-2",
+  "isLast": false
+}

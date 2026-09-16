@@ -1,0 +1,37 @@
+{
+  "_provenance": "Envelope shape (expand/id/self/key/fields) observed live 2026-09-16 against GET /rest/api/3/issue/{key}. Field subset kept small since full 16-default-field normalization is already covered by tests/fixtures/issue_full_fields.json; all values below are synthesized.",
+  "raw": {
+    "expand": "renderedFields,names,schema",
+    "id": "10201",
+    "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10201",
+    "key": "SYN-301",
+    "fields": {
+      "summary": "Investigate slow changelog pagination",
+      "status": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
+        "id": "3",
+        "name": "In Progress",
+        "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+      },
+      "assignee": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-201",
+        "accountId": "syn-acc-201",
+        "emailAddress": "morgan.diaz@example.invalid",
+        "displayName": "Morgan Diaz"
+      },
+      "updated": "2026-09-15T18:15:13.976-0400",
+      "resolutiondate": null
+    }
+  },
+  "expected_normalized_fields": {
+    "summary": "Investigate slow changelog pagination",
+    "status": {
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
+      "id": "3",
+      "name": "In Progress",
+      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+    },
+    "assignee": { "account_id": "syn-acc-201", "display_name": "Morgan Diaz" },
+    "updated": "2026-09-15T22:15:13Z"
+  }
+}

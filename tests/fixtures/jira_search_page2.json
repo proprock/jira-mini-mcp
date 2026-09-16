@@ -1,0 +1,45 @@
+{
+  "_provenance": "Shape observed live 2026-09-16 against GET /rest/api/3/search/jql when isLast becomes true: nextPageToken is absent entirely (not null), matching this fixture's key set. Values below are synthesized.",
+  "issues": [
+    {
+      "expand": "operations,versionedRepresentations",
+      "id": "10103",
+      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/10103",
+      "key": "SYN-203",
+      "fields": {
+        "summary": "Document the attachment cache lifecycle",
+        "issuetype": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issuetype/10004",
+          "id": "10004",
+          "name": "Task",
+          "iconUrl": "https://synthetic-tenant.atlassian.net/images/icons/issuetypes/task.svg"
+        },
+        "project": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/project/10000",
+          "id": "10000",
+          "key": "SYN",
+          "name": "Synthetic Project"
+        },
+        "assignee": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-102",
+          "accountId": "syn-acc-102",
+          "emailAddress": "riley.chen@example.invalid",
+          "displayName": "Riley Chen"
+        },
+        "priority": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/priority/4",
+          "id": "4",
+          "name": "Low"
+        },
+        "status": {
+          "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/1",
+          "id": "1",
+          "name": "To Do",
+          "statusCategory": { "id": 2, "key": "new", "name": "To Do" }
+        },
+        "updated": "2026-09-10T12:00:00.000-0400"
+      }
+    }
+  ],
+  "isLast": true
+}
