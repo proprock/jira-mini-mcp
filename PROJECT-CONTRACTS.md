@@ -167,9 +167,12 @@ return `self`, visibility metadata, or the raw ADF document.
 
 ### `get_attachments` and `download_attachment`
 
-`get_attachments(issue_key)` returns metadata only: `id`, `filename`,
-`mime_type`, `size`, compact `author`, and UTC `created`. Never embed binary or
-base64 attachment contents or Jira download URLs.
+`get_attachments(issue_key)` returns `{items}`, mirroring the collection-
+wrapping convention `search_issues`/`get_comments`/`get_changelog` already use
+(a bare top-level array cannot be an MCP `structuredContent` object). Each
+item has metadata only: `id`, `filename`, `mime_type`, `size`, compact
+`author`, and UTC `created`. Never embed binary or base64 attachment contents
+or Jira download URLs.
 
 `download_attachment(attachment_id)` writes to an automatically created
 process-scoped temporary cache and returns `attachment_id`, `filename`,
