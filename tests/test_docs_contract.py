@@ -65,6 +65,7 @@ async def test_registered_tool_names_match_actual_server(
     monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
     monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
     monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+    monkeypatch.delenv("READ_ONLY_MODE", raising=False)
 
     server = create_server()
     async with Client(server) as client:

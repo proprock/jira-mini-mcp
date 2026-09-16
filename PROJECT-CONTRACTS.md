@@ -238,6 +238,27 @@ JIRA_API_TOKEN
 Use Jira Cloud Basic authentication with the email and API token. Do not expose
 Bearer/PAT or OAuth configuration in the MVP.
 
+`READ_ONLY_MODE` is an optional fourth value and the only one that is not a
+credential. It restricts tool registration to the tools annotated
+`readOnlyHint`, so an operator can withhold state-changing tools without
+building a second server or maintaining a client-side allowlist:
+
+```text
+READ_ONLY_MODE
+```
+
+`true`, `1`, and `on` enable it; `false`, `0`, `off`, an empty value, and an
+absent variable all leave it disabled, which registers every tool. Surrounding
+whitespace is ignored and the comparison is case-insensitive. Any other value is
+a startup `ConfigError` naming the variable, the value received, and the accepted
+spellings — never a silent fallback, because ignoring a typo here would register
+tools an operator believed they had withheld. The switch selects MCP tool
+registration, not Jira access: it is parsed beside the three credentials rather
+than inside `JiraConfig`, and `JiraClient` is unaware of it. It does not grant or
+revoke any Jira permission; the API token's own account permissions still apply.
+Enabling it writes one line to stderr at startup naming the mode, and never a
+configured value.
+
 ## Packaging and compatibility
 
 Use a standard `src` package layout, PEP 517/518/621 packaging, and a
