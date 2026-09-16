@@ -18,6 +18,7 @@ from jira_mini_mcp import errors
 from jira_mini_mcp.auth import BasicTokenAuth
 from jira_mini_mcp.models import (
     Attachment,
+    ChangelogEntry,
     Comment,
     DownloadResult,
     IncompleteNormalizationError,
@@ -27,6 +28,7 @@ from jira_mini_mcp.models import (
     Page,
     SearchPage,
     normalize_attachment,
+    normalize_changelog_entry,
     normalize_comment,
     normalize_issue_fields,
     to_utc_iso,
@@ -72,6 +74,17 @@ ISSUE_DEFAULT_FIELDS: tuple[str, ...] = (
 # exercise multi-page fetches without giant fixtures.
 COMMENTS_PAGE_SIZE = 100
 
+# Jira Cloud v3's changelog endpoint accepts startAt/maxResults but, unlike
+# comments, has no orderBy: it is always oldest-first. Observed live on a
+# Jira Cloud test site 2026-09-16: an `orderBy` param sent to this endpoint
+# is silently ignored (still ascending); startAt/maxResults index that fixed
+# ascending collection directly; and `total` is only trustworthy while the
+# requested startAt does not exceed it -- once startAt overshoots the real
+# total, Jira echoes back `total == startAt` instead of the real count. This
+# constant is our own internal fetch chunk size, not a Jira-imposed limit;
+# tests shrink it via monkeypatch to exercise multi-page fetches.
+CHANGELOG_PAGE_SIZE = 100
+
 # Jira Cloud v3's single-issue GET treats fields="" and fields=-* as
 # "unspecified" and returns a tenant- and permission-dependent full field set.
 # Observed live on a Jira Cloud site 2026-09-16. The issue `id` lives outside
@@ -103,6 +116,26 @@ def _comment_sort_key(raw: Any) -> tuple[str, str]:
             created_utc = ""
     comment_id = raw.get("id")
     return (created_utc, comment_id if isinstance(comment_id, str) else "")
+
+
+def _changelog_sort_key(raw: Any) -> tuple[str, str]:
+    """Best-effort `(created, id)` sort key for local tie-break resorting.
+
+    An unparsable `created` or non-string `id` sorts as `""`: such an entry
+    gets dropped by `normalize_changelog_entry` anyway, so its position here
+    is moot.
+    """
+    if not isinstance(raw, dict):
+        return ("", "")
+    created_raw = raw.get("created")
+    created_utc = ""
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            created_utc = to_utc_iso(created_raw)
+        except ValueError:
+            created_utc = ""
+    entry_id = raw.get("id")
+    return (created_utc, entry_id if isinstance(entry_id, str) else "")
 
 
 def _sanitize_attachment_filename(filename: str) -> str:
@@ -709,3 +742,115 @@ class JiraClient:
             size=size,
             local_path=str(final_path),
         )
+
+    async def _fetch_changelog_page(
+        self, issue_key: str, jira_start_at: int, jira_max_results: int
+    ) -> tuple[list[Any], int]:
+        body = await self._get(
+            f"/rest/api/3/issue/{issue_key}/changelog",
+            operation="get_changelog",
+            issue_key=issue_key,
+            params={"startAt": jira_start_at, "maxResults": jira_max_results},
+        )
+        raw_values = body.get("values") if isinstance(body, dict) else None
+        total = body.get("total") if isinstance(body, dict) else None
+        if (
+            not isinstance(raw_values, list)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+        ):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'get_changelog'.",
+                operation="get_changelog",
+                issue_key=issue_key,
+            )
+        return raw_values, total
+
+    async def _fetch_changelog_window(
+        self, issue_key: str, start_at: int, limit: int, order: str
+    ) -> tuple[list[Any], int]:
+        """Fetch the raw changelog entries for the logical `[start_at:start_at+limit]` window.
+
+        Jira Cloud v3's changelog has no orderBy and is always oldest-first,
+        so a descending request must be reconstructed locally: map the
+        logical window onto the equivalent ascending upstream index range,
+        fetch every page needed to cover that whole range, then resort it
+        (which reverses it for "desc") -- never just reverse a single
+        upstream page. `total` is only trustworthy for a startAt that does
+        not exceed it, so a minimal discovery fetch at startAt=0 (always
+        <= any real total) establishes the true total before it is used to
+        compute that range.
+        """
+        _, total = await self._fetch_changelog_page(issue_key, 0, 1)
+
+        if start_at >= total:
+            return [], total
+
+        remaining = limit if limit != 0 else total - start_at
+        if order == "asc":
+            low = start_at
+            high = min(start_at + remaining, total)
+        else:
+            high = total - start_at
+            low = max(high - remaining, 0)
+
+        collected: list[Any] = []
+        current = low
+        while current < high:
+            page_size = min(CHANGELOG_PAGE_SIZE, high - current)
+            raw_values, _ = await self._fetch_changelog_page(issue_key, current, page_size)
+            collected.extend(raw_values)
+            current += len(raw_values)
+            if len(raw_values) < page_size:
+                break
+
+        collected.sort(key=_changelog_sort_key, reverse=(order == "desc"))
+        return collected, total
+
+    async def get_changelog(
+        self,
+        issue_key: str,
+        start_at: int = 0,
+        limit: int = 20,
+        order: str = "desc",
+    ) -> Page[ChangelogEntry]:
+        if start_at < 0:
+            raise errors.JiraValidationError(
+                "get_changelog 'start_at' must be a non-negative value.",
+                operation="get_changelog",
+                issue_key=issue_key,
+            )
+        if limit < 0:
+            raise errors.JiraValidationError(
+                "get_changelog 'limit' must be a non-negative value; use 0 for no limit.",
+                operation="get_changelog",
+                issue_key=issue_key,
+            )
+        if order not in ("asc", "desc"):
+            raise errors.JiraValidationError(
+                "get_changelog 'order' must be 'asc' or 'desc'.",
+                operation="get_changelog",
+                issue_key=issue_key,
+            )
+
+        raw_items, total = await self._fetch_changelog_window(issue_key, start_at, limit, order)
+
+        items: list[ChangelogEntry] = []
+        problems: list[str] = []
+        for index, raw in enumerate(raw_items):
+            model_problems: list[NormalizationProblem] = []
+            entry = normalize_changelog_entry(raw, f"$.items[{index}]", model_problems)
+            problems.extend(str(problem) for problem in model_problems)
+            if entry is not None:
+                items.append(entry)
+
+        result = Page(start_at=start_at, total=total, items=items)
+        if problems:
+            raise _incomplete_response_error(
+                operation="get_changelog",
+                issue_key=issue_key,
+                problems=problems,
+                partial_result=asdict(result),
+            )
+
+        return result
