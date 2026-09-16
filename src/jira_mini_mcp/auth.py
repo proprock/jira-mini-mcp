@@ -1,8 +1,13 @@
 """Startup configuration loading and Jira Cloud Basic authentication.
 
-Exactly three settings are supported: JIRA_BASE_URL, JIRA_EMAIL, and
+Exactly three settings are required: JIRA_BASE_URL, JIRA_EMAIL, and
 JIRA_API_TOKEN. Credential values never leave this module in an error,
 log message, or repr.
+
+READ_ONLY_MODE is an optional fourth value, parsed here but deliberately
+kept out of JiraConfig: it selects which MCP tools get registered, which
+is server behavior rather than a Jira credential, and JiraClient must stay
+unaware of it.
 """
 
 from __future__ import annotations
@@ -23,6 +28,10 @@ _REQUIRED_VARS: dict[str, str] = {
         "https://id.atlassian.com/manage-profile/security/api-tokens)"
     ),
 }
+
+_READ_ONLY_MODE_VAR = "READ_ONLY_MODE"
+_READ_ONLY_MODE_TRUE = frozenset({"true", "1", "on"})
+_READ_ONLY_MODE_FALSE = frozenset({"false", "0", "off", ""})
 
 
 class ConfigError(JiraMiniError):
@@ -53,6 +62,32 @@ def load_config_from_env(env: Mapping[str, str] = os.environ) -> JiraConfig:
         base_url=env["JIRA_BASE_URL"],
         email=env["JIRA_EMAIL"],
         api_token=env["JIRA_API_TOKEN"],
+    )
+
+
+def load_read_only_mode(env: Mapping[str, str] = os.environ) -> bool:
+    """Parse the optional READ_ONLY_MODE switch.
+
+    Absent, empty, and the false spellings all disable it; an unrecognized
+    value is a startup error rather than a silent fallback, because
+    silently ignoring a typo here would register write tools an operator
+    believed they had turned off.
+    """
+    raw = env.get(_READ_ONLY_MODE_VAR)
+    if raw is None:
+        return False
+
+    value = raw.strip().lower()
+    if value in _READ_ONLY_MODE_TRUE:
+        return True
+    if value in _READ_ONLY_MODE_FALSE:
+        return False
+
+    raise ConfigError(
+        f"{_READ_ONLY_MODE_VAR} is set to {raw!r}, which is not a recognized value. "
+        "Set it to true, 1, or on to register read-only tools only, or to "
+        "false, 0, or off to register every tool (case-insensitive); "
+        "leaving it unset also registers every tool."
     )
 
 

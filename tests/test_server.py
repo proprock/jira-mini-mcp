@@ -23,9 +23,10 @@ import httpx2
 import pytest
 from mcp import Client, StdioServerParameters
 from mcp.server.mcpserver import MCPServer
-from mcp.types import TextContent
+from mcp.types import TextContent, ToolAnnotations
 
 from jira_mini_mcp import errors
+from jira_mini_mcp import server as server_module
 from jira_mini_mcp.auth import ConfigError
 from jira_mini_mcp.jira import JiraClient
 from jira_mini_mcp.models import (
@@ -40,7 +41,13 @@ from jira_mini_mcp.models import (
     SearchPage,
     User,
 )
-from jira_mini_mcp.server import AppContext, create_server
+from jira_mini_mcp.server import (
+    _TOOL_SPECS,
+    AppContext,
+    _registered_tools,
+    _ToolSpec,
+    create_server,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -160,7 +167,9 @@ def _server_with(fake: FakeJiraClient) -> MCPServer[AppContext]:
         # the type checker that on our behalf.
         yield AppContext(jira_client=cast(JiraClient, fake))
 
-    return create_server(lifespan=fake_lifespan)
+    # An explicit read_only_mode keeps every adapter test independent of
+    # whatever READ_ONLY_MODE the developer's shell happens to export.
+    return create_server(lifespan=fake_lifespan, read_only_mode=False)
 
 
 def _text_of(result: Any) -> str:
@@ -172,6 +181,17 @@ def _text_of(result: Any) -> str:
 
 def _content_json(result: Any) -> Any:
     return json.loads(_text_of(result))
+
+
+def _stub_create_server(**kwargs: Any) -> Any:
+    """Stands in for create_server in main() tests: main() must not block
+    on a real stdio transport just to prove what it printed."""
+
+    class _Stub:
+        def run(self) -> None:
+            return None
+
+    return _Stub()
 
 
 def _description(tool: Any) -> str:
@@ -839,3 +859,105 @@ class TestStdioSubprocessSmoke:
             tools = (await client.list_tools()).tools
 
         assert {tool.name for tool in tools} == set(TOOL_NAMES)
+
+
+class TestReadOnlyModeGate:
+    """READ_ONLY_MODE filters tool registration on the read-only annotation.
+
+    Today every tool is read-only, so the real server cannot prove the
+    filter works -- these tests exercise it against a synthetic registry
+    that deliberately mixes annotations, and separately guard that today's
+    six tools are identical under both settings.
+    """
+
+    @staticmethod
+    def _mixed_registry() -> tuple[_ToolSpec, ...]:
+        async def reader() -> dict[str, Any]:
+            return {}
+
+        async def writer() -> dict[str, Any]:
+            return {}
+
+        return (
+            _ToolSpec(reader, "a read tool", ToolAnnotations(read_only_hint=True)),
+            _ToolSpec(writer, "a write tool", ToolAnnotations(read_only_hint=False)),
+            _ToolSpec(writer, "an unannotated tool", ToolAnnotations()),
+        )
+
+    def test_disabled_mode_registers_every_tool_including_writers(self) -> None:
+        registry = self._mixed_registry()
+        assert _registered_tools(registry, read_only_mode=False) == registry
+
+    def test_enabled_mode_registers_only_read_only_annotated_tools(self) -> None:
+        registry = self._mixed_registry()
+        selected = _registered_tools(registry, read_only_mode=True)
+        assert [spec.description for spec in selected] == ["a read tool"]
+
+    def test_every_tool_the_server_defines_is_annotated_read_only_today(self) -> None:
+        # Guards the current six-tool surface, not the filter: once a write
+        # tool exists this becomes a real mixed-mode assertion.
+        assert all(spec.annotations.read_only_hint for spec in _TOOL_SPECS)
+
+    @pytest.mark.parametrize("raw", [None, "", "false", "0", "OFF", "true", "1", "ON"])
+    async def test_todays_six_tools_are_identical_under_both_settings(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str | None
+    ) -> None:
+        monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        if raw is None:
+            monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("READ_ONLY_MODE", raw)
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert [tool.name for tool in tools] == list(TOOL_NAMES)
+
+    def test_invalid_value_stops_startup_before_any_tool_is_registered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("READ_ONLY_MODE", "read-only")
+        with pytest.raises(ConfigError) as exc_info:
+            create_server()
+        assert "READ_ONLY_MODE" in str(exc_info.value)
+
+    def test_explicit_argument_overrides_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("READ_ONLY_MODE", "not-a-boolean")
+        # An explicit value means the environment is never consulted, which
+        # is what keeps every other test in this module independent of the
+        # developer's own shell.
+        assert create_server(read_only_mode=True) is not None
+
+    def test_startup_announces_read_only_mode_without_leaking_values(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        monkeypatch.setenv("READ_ONLY_MODE", "true")
+        monkeypatch.setattr(server_module, "create_server", _stub_create_server)
+
+        server_module.main()
+
+        captured = capsys.readouterr()
+        assert "READ_ONLY_MODE enabled" in captured.err
+        # stdout carries the MCP protocol; nothing may be written there.
+        assert captured.out == ""
+        for secret in ("super-secret-token", "agent@example.com", "synthetic-tenant"):
+            assert secret not in captured.err
+
+    def test_startup_is_silent_in_the_default_mode(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        monkeypatch.setattr(server_module, "create_server", _stub_create_server)
+
+        server_module.main()
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""

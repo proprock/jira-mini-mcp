@@ -1,5 +1,10 @@
 """MCP server wiring: registers the six read-only Jira tools over stdio.
 
+Registration goes through `_TOOL_SPECS` rather than a straight run of
+`add_tool` calls so READ_ONLY_MODE can filter it on each tool's read-only
+annotation -- never on tool names, so a future write tool only has to
+annotate itself correctly to be gated.
+
 Tool adapters are thin: validate/default through `JiraClient`'s own
 signatures, call it, translate `JiraMiniError` into `ToolError` (so the
 client sees the actionable message instead of a generic crash string), and
@@ -14,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +33,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from jira_mini_mcp import errors
-from jira_mini_mcp.auth import BasicTokenAuth, load_config_from_env
+from jira_mini_mcp.auth import BasicTokenAuth, load_config_from_env, load_read_only_mode
 from jira_mini_mcp.jira import ISSUE_DEFAULT_FIELDS, SEARCH_DEFAULT_FIELDS, JiraClient
 from jira_mini_mcp.models import (
     Attachment,
@@ -43,6 +49,15 @@ from jira_mini_mcp.models import (
 )
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
+
+
+@dataclass(frozen=True)
+class _ToolSpec:
+    """One registerable tool, as data, so the gate below can filter it."""
+
+    fn: Callable[..., Any]
+    description: str
+    annotations: ToolAnnotations
 
 
 @dataclass
@@ -280,39 +295,31 @@ async def get_changelog(
     return _dump_changelog_page(page)
 
 
-def create_server(
-    *,
-    lifespan: Callable[
-        [MCPServer[AppContext]], AbstractAsyncContextManager[AppContext]
-    ] = app_lifespan,
-) -> MCPServer[AppContext]:
-    """Build the server with all six tools registered but not yet running."""
-    server: MCPServer[AppContext] = MCPServer(name="jira-mini-mcp", lifespan=lifespan)
-
-    server.add_tool(
+_TOOL_SPECS: tuple[_ToolSpec, ...] = (
+    _ToolSpec(
         search_issues,
-        description=(
+        (
             "Search Jira Cloud issues with JQL. Returns items and an opaque "
             "next_page_token (null on the last page); pass it back as page_token "
             "for the next page. limit is 1..100 (default 20); 0 is invalid. fields "
             "replaces the default fields entirely -- default: "
             f"{', '.join(SEARCH_DEFAULT_FIELDS)}. fields=[] returns only the issue key."
         ),
-        annotations=_READ_ONLY,
-    )
-    server.add_tool(
+        _READ_ONLY,
+    ),
+    _ToolSpec(
         get_issue,
-        description=(
+        (
             "Fetch one issue by key. fields replaces the default fields entirely -- "
             f"default: {', '.join(ISSUE_DEFAULT_FIELDS)}. fields=[] returns the key "
             "with no fields. Does not include comments, attachments, or changelog "
             "history; use the dedicated tools for those."
         ),
-        annotations=_READ_ONLY,
-    )
-    server.add_tool(
+        _READ_ONLY,
+    ),
+    _ToolSpec(
         get_comments,
-        description=(
+        (
             "List an issue's comments. order='desc' (default) returns newest "
             "first; 'asc' returns oldest first. start_at/limit paginate the "
             "logical, filtered, sorted collection (ties broken by comment id); "
@@ -321,43 +328,87 @@ def create_server(
             "comments created at or after that instant, and total reflects the "
             "filtered collection."
         ),
-        annotations=_READ_ONLY,
-    )
-    server.add_tool(
+        _READ_ONLY,
+    ),
+    _ToolSpec(
         get_attachments,
-        description=(
+        (
             "List an issue's attachment metadata (id, filename, mime_type, size, "
             "author, created) without downloading content. Use download_attachment "
             "to fetch a file's bytes."
         ),
-        annotations=_READ_ONLY,
-    )
-    server.add_tool(
+        _READ_ONLY,
+    ),
+    _ToolSpec(
         download_attachment,
-        description=(
+        (
             "Download one attachment by id into a process-scoped temporary cache "
             "and return its local_path. The cache is removed when the server "
             "shuts down."
         ),
-        annotations=_READ_ONLY,
-    )
-    server.add_tool(
+        _READ_ONLY,
+    ),
+    _ToolSpec(
         get_changelog,
-        description=(
+        (
             "List an issue's field-change history. order='desc' (default) returns "
             "newest first; 'asc' returns oldest first. start_at/limit paginate the "
             "logical, sorted collection (ties broken by entry id); limit=0 returns "
             "every remaining entry from start_at with no cap. Each entry lists "
             "human-readable field changes."
         ),
-        annotations=_READ_ONLY,
-    )
+        _READ_ONLY,
+    ),
+)
+
+
+def _registered_tools(specs: Sequence[_ToolSpec], *, read_only_mode: bool) -> tuple[_ToolSpec, ...]:
+    """Select the tools to register, gating on the read-only annotation.
+
+    Deliberately not a name allowlist: a future write tool becomes
+    gate-aware purely by annotating itself, with no edit here.
+    """
+    if not read_only_mode:
+        return tuple(specs)
+    return tuple(spec for spec in specs if spec.annotations.read_only_hint)
+
+
+def create_server(
+    *,
+    lifespan: Callable[
+        [MCPServer[AppContext]], AbstractAsyncContextManager[AppContext]
+    ] = app_lifespan,
+    read_only_mode: bool | None = None,
+) -> MCPServer[AppContext]:
+    """Build the server with its tools registered but not yet running.
+
+    `read_only_mode` defaults to the READ_ONLY_MODE environment value, so
+    an unrecognized setting stops startup here -- before any tool is
+    registered -- rather than at the first call.
+    """
+    if read_only_mode is None:
+        read_only_mode = load_read_only_mode()
+
+    server: MCPServer[AppContext] = MCPServer(name="jira-mini-mcp", lifespan=lifespan)
+    for spec in _registered_tools(_TOOL_SPECS, read_only_mode=read_only_mode):
+        server.add_tool(spec.fn, description=spec.description, annotations=spec.annotations)
 
     return server
 
 
 def main() -> None:
-    create_server().run()
+    read_only_mode = load_read_only_mode()
+    if read_only_mode:
+        # Announce only the non-default mode: the default is evident from
+        # the advertised tool list, while a restricted surface would
+        # otherwise leave an operator guessing why a tool vanished. stdout
+        # carries the MCP protocol, so this goes to stderr, and it names
+        # the mode without echoing any configured value.
+        print(
+            "jira-mini-mcp: READ_ONLY_MODE enabled; registering read-only tools only.",
+            file=sys.stderr,
+        )
+    create_server(read_only_mode=read_only_mode).run()
 
 
 if __name__ == "__main__":
