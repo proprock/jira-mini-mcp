@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.12"
+
+      - name: uv sync
+        run: uv sync
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify sdist installs cleanly and passes MCP discovery
+        run: |
+          python -m venv /tmp/verify-sdist
+          /tmp/verify-sdist/bin/pip install --quiet dist/*.tar.gz
+          /tmp/verify-sdist/bin/python scripts/verify_mcp_discovery.py /tmp/verify-sdist/bin/jira-mini-mcp
+
+      - name: Verify wheel installs cleanly and passes MCP discovery
+        run: |
+          python -m venv /tmp/verify-wheel
+          /tmp/verify-wheel/bin/pip install --quiet dist/*.whl
+          /tmp/verify-wheel/bin/python scripts/verify_mcp_discovery.py /tmp/verify-wheel/bin/jira-mini-mcp
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<EOF
+          Initial MVP release: a minimal, read-only Jira Cloud REST API v3 MCP server for coding agents.
+
+          Six tools: search_issues, get_issue, get_comments, get_attachments, download_attachment, get_changelog. Configuration is exactly three environment variables: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN.
+
+          Install and run directly from this tag:
+          uvx --from git+https://github.com/proprock/jira-mini-mcp@${GITHUB_REF_NAME} jira-mini-mcp
+
+          See README.md for setup and tool details. Not yet published to PyPI.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md
