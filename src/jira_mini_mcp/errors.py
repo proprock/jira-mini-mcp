@@ -1,1 +1,186 @@
-"""Exception hierarchy for Jira and MCP tool error mapping."""
+"""Exception hierarchy for Jira and MCP tool error mapping.
+
+`raise_for_response` is the only place HTTP status codes are mapped to
+exception types; `jira.py` calls it instead of reimplementing the mapping.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx2
+
+
+class JiraMiniError(Exception):
+    """Base class for all jira-mini-mcp errors.
+
+    Never carries a URL, credential, header value, or raw response body.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        issue_key: str | None = None,
+        status_code: int | None = None,
+        jira_error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.operation = operation
+        self.issue_key = issue_key
+        self.status_code = status_code
+        self.jira_error_code = jira_error_code
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class JiraAuthenticationError(JiraMiniError):
+    """Jira rejected the configured credentials (HTTP 401)."""
+
+
+class JiraPermissionError(JiraMiniError):
+    """The authenticated user lacks permission for the operation (HTTP 403)."""
+
+
+class JiraNotFoundError(JiraMiniError):
+    """The requested Jira resource does not exist or is not visible (HTTP 404)."""
+
+
+class JiraRateLimitError(JiraMiniError):
+    """Jira is rate-limiting requests (HTTP 429)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        issue_key: str | None = None,
+        status_code: int | None = None,
+        jira_error_code: str | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            operation=operation,
+            issue_key=issue_key,
+            status_code=status_code,
+            jira_error_code=jira_error_code,
+        )
+        self.retry_after = retry_after
+
+
+class JiraValidationError(JiraMiniError):
+    """The request was invalid, locally or as reported by Jira (other 4xx)."""
+
+
+class JiraTimeoutError(JiraMiniError):
+    """The request to Jira timed out."""
+
+
+class JiraServerError(JiraMiniError):
+    """Jira reported an internal server error (5xx)."""
+
+
+class JiraNetworkError(JiraMiniError):
+    """A network/transport failure occurred while contacting Jira."""
+
+
+def _extract_jira_detail(response: httpx2.Response) -> str | None:
+    """Pull human-readable text out of Jira's error JSON body, if any.
+
+    Only extracted text strings are used; the raw body is never surfaced.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+
+    parts: list[str] = []
+    error_messages = body.get("errorMessages")
+    if isinstance(error_messages, list):
+        parts.extend(str(m) for m in error_messages if isinstance(m, str))
+    field_errors = body.get("errors")
+    if isinstance(field_errors, dict):
+        parts.extend(
+            f"{field}: {text}" for field, text in field_errors.items() if isinstance(text, str)
+        )
+    return "; ".join(parts) if parts else None
+
+
+def _parse_retry_after(response: httpx2.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def raise_for_response(
+    response: httpx2.Response,
+    *,
+    operation: str,
+    issue_key: str | None = None,
+) -> None:
+    """Raise the JiraMiniError subclass matching `response`'s status code.
+
+    Does nothing for a successful (< 400) response.
+    """
+    status = response.status_code
+    if status < 400:
+        return
+
+    detail = _extract_jira_detail(response)
+
+    if status == 401:
+        message = "Jira rejected the request credentials. Check JIRA_EMAIL and JIRA_API_TOKEN."
+        raise JiraAuthenticationError(
+            message, operation=operation, issue_key=issue_key, status_code=status
+        )
+
+    if status == 403:
+        message = f"Permission denied for operation '{operation}'."
+        if detail:
+            message = f"{message} {detail}"
+        raise JiraPermissionError(
+            message, operation=operation, issue_key=issue_key, status_code=status
+        )
+
+    if status == 404:
+        target = f" '{issue_key}'" if issue_key else ""
+        message = f"Jira resource{target} was not found for operation '{operation}'."
+        raise JiraNotFoundError(
+            message, operation=operation, issue_key=issue_key, status_code=status
+        )
+
+    if status == 429:
+        retry_after = _parse_retry_after(response)
+        message = f"Jira rate-limited operation '{operation}'."
+        message = (
+            f"{message} Retry after {retry_after:.0f} seconds."
+            if retry_after is not None
+            else f"{message} Retry after a short delay."
+        )
+        raise JiraRateLimitError(
+            message,
+            operation=operation,
+            issue_key=issue_key,
+            status_code=status,
+            retry_after=retry_after,
+        )
+
+    if status >= 500:
+        message = f"Jira is currently unavailable for operation '{operation}'. Retry later."
+        raise JiraServerError(message, operation=operation, issue_key=issue_key, status_code=status)
+
+    message = f"Jira rejected operation '{operation}' as invalid."
+    if detail:
+        message = f"{message} {detail}"
+    raise JiraValidationError(message, operation=operation, issue_key=issue_key, status_code=status)
