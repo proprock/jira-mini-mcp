@@ -874,3 +874,280 @@ class TestDataclassShapes:
             id="20001", author=author, created="2024-01-01T00:00:00Z", changes=[change]
         )
         assert entry.changes == [change]
+
+
+CANONICAL_MARKDOWN = """# Release notes
+
+Fixed the retry loop in `_request` and added a regression test.
+
+**Note:** this changes *nothing* for callers. See [the PR](https://example.invalid/pr/7).
+
+- first item
+- second item
+
+1. one
+2. two
+
+> Reviewed by the platform team.
+
+```python
+retry(attempts=3)
+```"""
+
+
+class TestMarkdownToAdf:
+    """The inverse of adf_to_markdown, over the same node set.
+
+    Round-tripping the canonical corpus is the strongest assertion here: it
+    pins both functions to one shared vocabulary instead of letting them
+    drift into two dialects.
+    """
+
+    def test_round_trips_the_canonical_corpus(self) -> None:
+        document = models.markdown_to_adf(CANONICAL_MARKDOWN)
+        assert models.adf_to_markdown(document) == CANONICAL_MARKDOWN
+
+    def test_result_is_always_a_versioned_doc_node(self) -> None:
+        document = models.markdown_to_adf("hello")
+        assert document["type"] == "doc"
+        assert document["version"] == 1
+        assert isinstance(document["content"], list)
+
+    def test_plain_paragraph(self) -> None:
+        assert models.markdown_to_adf("hello world")["content"] == [
+            {"type": "paragraph", "content": [{"type": "text", "text": "hello world"}]}
+        ]
+
+    def test_blank_lines_separate_paragraphs(self) -> None:
+        document = models.markdown_to_adf("first\n\n\n\nsecond")
+        assert [block["type"] for block in document["content"]] == ["paragraph", "paragraph"]
+
+    def test_consecutive_lines_become_one_paragraph_with_hard_breaks(self) -> None:
+        document = models.markdown_to_adf("line one\nline two")
+        assert document["content"] == [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "line one"},
+                    {"type": "hardBreak"},
+                    {"type": "text", "text": "line two"},
+                ],
+            }
+        ]
+
+    @pytest.mark.parametrize("level", [1, 2, 3, 4, 5, 6])
+    def test_atx_headings(self, level: int) -> None:
+        document = models.markdown_to_adf(f"{'#' * level} Title")
+        assert document["content"] == [
+            {
+                "type": "heading",
+                "attrs": {"level": level},
+                "content": [{"type": "text", "text": "Title"}],
+            }
+        ]
+
+    def test_seventh_hash_level_is_not_a_heading(self) -> None:
+        document = models.markdown_to_adf("####### too deep")
+        assert document["content"][0]["type"] == "paragraph"
+
+    def test_bullet_list(self) -> None:
+        document = models.markdown_to_adf("- a\n- b")
+        assert document["content"] == [
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {"type": "paragraph", "content": [{"type": "text", "text": "a"}]}
+                        ],
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {"type": "paragraph", "content": [{"type": "text", "text": "b"}]}
+                        ],
+                    },
+                ],
+            }
+        ]
+
+    def test_asterisk_bullets_are_a_bullet_list_too(self) -> None:
+        assert models.markdown_to_adf("* a\n* b")["content"][0]["type"] == "bulletList"
+
+    def test_ordered_list_renumbers_from_one_on_the_way_back(self) -> None:
+        document = models.markdown_to_adf("7. seven\n9. nine")
+        assert document["content"][0]["type"] == "orderedList"
+        assert models.adf_to_markdown(document) == "1. seven\n2. nine"
+
+    def test_blockquote(self) -> None:
+        document = models.markdown_to_adf("> quoted line")
+        assert document["content"] == [
+            {
+                "type": "blockquote",
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "quoted line"}]}
+                ],
+            }
+        ]
+
+    def test_fenced_code_block_keeps_its_language_and_raw_text(self) -> None:
+        document = models.markdown_to_adf("```sql\nSELECT *\nFROM t -- **not bold**\n```")
+        assert document["content"] == [
+            {
+                "type": "codeBlock",
+                "attrs": {"language": "sql"},
+                "content": [{"type": "text", "text": "SELECT *\nFROM t -- **not bold**"}],
+            }
+        ]
+
+    def test_fence_without_a_language_omits_the_attribute(self) -> None:
+        document = models.markdown_to_adf("```\nplain\n```")
+        assert "attrs" not in document["content"][0]
+
+    def test_unclosed_fence_consumes_the_rest_as_code(self) -> None:
+        document = models.markdown_to_adf("```\nstill code\n\n# not a heading")
+        assert [block["type"] for block in document["content"]] == ["codeBlock"]
+        assert document["content"][0]["content"][0]["text"] == "still code\n\n# not a heading"
+
+    @pytest.mark.parametrize(
+        ("source", "mark"),
+        [
+            ("**bold**", {"type": "strong"}),
+            ("*slanted*", {"type": "em"}),
+            ("_slanted_", {"type": "em"}),
+            ("`literal`", {"type": "code"}),
+        ],
+    )
+    def test_inline_marks(self, source: str, mark: dict) -> None:
+        nodes = models.markdown_to_adf(source)["content"][0]["content"]
+        assert nodes[0]["marks"] == [mark]
+
+    def test_link(self) -> None:
+        paragraph = models.markdown_to_adf("see [docs](https://example.invalid/d)")["content"][0]
+        assert paragraph["content"][1] == {
+            "type": "text",
+            "text": "docs",
+            "marks": [{"type": "link", "attrs": {"href": "https://example.invalid/d"}}],
+        }
+
+    def test_code_span_suppresses_the_marks_inside_it(self) -> None:
+        nodes = models.markdown_to_adf("`a **b** c`")["content"][0]["content"]
+        assert nodes == [{"type": "text", "text": "a **b** c", "marks": [{"type": "code"}]}]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "next_page_token and start_at",
+            "snake_case_identifier",
+            "2 * 3 * 4",
+            "a * b",
+        ],
+    )
+    def test_intraword_and_spaced_delimiters_stay_literal(self, source: str) -> None:
+        nodes = models.markdown_to_adf(source)["content"][0]["content"]
+        assert nodes == [{"type": "text", "text": source}]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "an *unclosed emphasis",
+            "an **unclosed strong",
+            "an `unclosed code span",
+            "an [unclosed](link",
+            "a lone *",
+            "| a | table |",
+            "<b>html</b>",
+            "![image](https://example.invalid/i.png)",
+            "[ref][1]",
+        ],
+    )
+    def test_unsupported_or_malformed_syntax_survives_as_text(self, source: str) -> None:
+        assert _adf_text(models.markdown_to_adf(source)) == source
+
+    def test_crlf_and_cr_are_normalized(self) -> None:
+        assert models.markdown_to_adf("a\r\n\r\nb") == models.markdown_to_adf("a\n\nb")
+        assert models.markdown_to_adf("a\rb") == models.markdown_to_adf("a\nb")
+
+    @pytest.mark.parametrize("source", ["", "   ", "\n\n", "\t \r\n "])
+    def test_empty_input_is_a_value_error_not_an_empty_document(self, source: str) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            models.markdown_to_adf(source)
+        assert "empty" in str(exc_info.value).lower()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            CANONICAL_MARKDOWN,
+            "a lone *",
+            "```unclosed",
+            "- \n- \n",
+            "> \n>\n",
+            "#",
+            "#no space",
+            "1.",
+            "***",
+            "[]()",
+            "`",
+            "   leading spaces",
+        ],
+    )
+    def test_every_document_produced_is_structurally_valid_adf(self, source: str) -> None:
+        _assert_valid_adf(models.markdown_to_adf(source))
+
+
+def _adf_text(node: dict) -> str:
+    """Every text fragment in a document, concatenated, marks ignored."""
+    if node.get("type") == "text":
+        return node.get("text", "")
+    return "".join(_adf_text(child) for child in node.get("content", []))
+
+
+_ADF_BLOCK_TYPES = frozenset(
+    {
+        "paragraph",
+        "heading",
+        "bulletList",
+        "orderedList",
+        "listItem",
+        "blockquote",
+        "codeBlock",
+    }
+)
+
+
+def _assert_valid_adf(node: dict) -> None:
+    """Structural check on a produced document.
+
+    Jira answers a malformed ADF document with a 400 an agent cannot act
+    on, so no input may produce one: every node is typed, every text node
+    carries non-empty text, and no unknown node type appears.
+    """
+    assert isinstance(node, dict)
+    node_type = node.get("type")
+    assert isinstance(node_type, str) and node_type
+
+    if node_type == "text":
+        assert isinstance(node.get("text"), str)
+        assert node["text"] != ""
+        for mark in node.get("marks", []):
+            assert isinstance(mark.get("type"), str)
+            if mark["type"] == "link":
+                assert isinstance(mark["attrs"]["href"], str)
+        return
+
+    if node_type == "hardBreak":
+        assert "content" not in node
+        return
+
+    if node_type == "heading":
+        assert node["attrs"]["level"] in range(1, 7)
+
+    if node_type == "doc" or node_type in _ADF_BLOCK_TYPES:
+        content = node.get("content", [])
+        assert isinstance(content, list)
+        for child in content:
+            _assert_valid_adf(child)
+        return
+
+    raise AssertionError(f"unexpected node type {node_type!r}")

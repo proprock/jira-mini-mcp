@@ -226,6 +226,179 @@ def adf_to_markdown(adf: dict[str, Any]) -> str:
     return _render_node(adf).strip()
 
 
+_FENCE_PATTERN = re.compile(r"^```(\w*)\s*$")
+_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_PATTERN = re.compile(r"^[-*]\s+(.*)$")
+_ORDERED_PATTERN = re.compile(r"^\d+\.\s+(.*)$")
+
+# One pass, no nesting: the leftmost delimiter wins and its content stays
+# literal. A delimiter that is not closed, or that hugs whitespace, simply
+# does not match and survives as text -- which is what keeps `2 * 3 * 4`
+# and `next_page_token` out of the emphasis rules. An image keeps its
+# whole source too: silently demoting it to a link would change what the
+# author wrote, and ADF media cannot be built from an arbitrary URL.
+_INLINE_PATTERN = re.compile(
+    r"`(?P<code>[^`]+)`"
+    r"|(?<!!)\[(?P<link_text>[^\]]*)\]\((?P<href>[^)\s]*)\)"
+    r"|\*\*(?P<strong>\S(?:.*?\S)?)\*\*"
+    r"|\*(?P<em>[^\s*](?:[^*]*?[^\s*])?)\*"
+    r"|(?<![A-Za-z0-9_])_(?P<em_underscore>[^\s_](?:[^_]*?[^\s_])?)_(?![A-Za-z0-9_])"
+)
+
+
+def markdown_to_adf(markdown: str) -> dict[str, Any]:
+    """Convert Markdown to a Jira Cloud Atlassian Document Format document.
+
+    The inverse of `adf_to_markdown` over the same node set, so the pair
+    round-trips the Markdown that function emits. Anything outside that
+    vocabulary -- tables, images, raw HTML, reference links, an unclosed
+    delimiter -- is kept as literal text rather than guessed at: Jira
+    answers a malformed document with a 400 an agent cannot act on, so no
+    input may produce one.
+    """
+    if not markdown.strip():
+        raise ValueError(
+            "The Markdown body is empty. Provide at least one non-whitespace character."
+        )
+
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return {"type": "doc", "version": 1, "content": _parse_blocks(lines)}
+
+
+def _parse_blocks(lines: list[str]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+
+        fence = _FENCE_PATTERN.match(stripped)
+        if fence is not None:
+            block, index = _parse_code_block(lines, index, fence.group(1))
+        elif (heading := _HEADING_PATTERN.match(stripped)) is not None:
+            block = {
+                "type": "heading",
+                "attrs": {"level": len(heading.group(1))},
+                "content": _parse_inline(heading.group(2).strip()),
+            }
+            index += 1
+        elif _BULLET_PATTERN.match(stripped) is not None:
+            block, index = _parse_list(lines, index, _BULLET_PATTERN, "bulletList")
+        elif _ORDERED_PATTERN.match(stripped) is not None:
+            block, index = _parse_list(lines, index, _ORDERED_PATTERN, "orderedList")
+        elif stripped.startswith(">"):
+            block, index = _parse_blockquote(lines, index)
+        else:
+            block, index = _parse_paragraph(lines, index)
+        blocks.append(block)
+    return blocks
+
+
+def _parse_code_block(lines: list[str], index: int, language: str) -> tuple[dict[str, Any], int]:
+    """Collect a fenced block verbatim; an unclosed fence takes the rest."""
+    body: list[str] = []
+    index += 1
+    while index < len(lines) and lines[index].strip() != "```":
+        body.append(lines[index])
+        index += 1
+
+    block: dict[str, Any] = {"type": "codeBlock"}
+    if language:
+        block["attrs"] = {"language": language}
+    text = "\n".join(body)
+    block["content"] = [{"type": "text", "text": text}] if text else []
+    return block, index + 1
+
+
+def _parse_list(
+    lines: list[str], index: int, pattern: re.Pattern[str], list_type: str
+) -> tuple[dict[str, Any], int]:
+    items: list[dict[str, Any]] = []
+    while index < len(lines) and (match := pattern.match(lines[index].strip())) is not None:
+        items.append(
+            {
+                "type": "listItem",
+                "content": [
+                    {"type": "paragraph", "content": _parse_inline(match.group(1).strip())}
+                ],
+            }
+        )
+        index += 1
+    return {"type": list_type, "content": items}, index
+
+
+def _parse_blockquote(lines: list[str], index: int) -> tuple[dict[str, Any], int]:
+    quoted: list[str] = []
+    while index < len(lines) and lines[index].strip().startswith(">"):
+        quoted.append(lines[index].strip().removeprefix(">").lstrip())
+        index += 1
+    return {"type": "blockquote", "content": _parse_blocks(quoted)}, index
+
+
+def _parse_paragraph(lines: list[str], index: int) -> tuple[dict[str, Any], int]:
+    """Consecutive plain lines are one paragraph; the breaks between them
+    are hardBreak nodes, which is how `adf_to_markdown` renders them back."""
+    content: list[dict[str, Any]] = []
+    while index < len(lines) and _starts_a_paragraph_line(lines[index]):
+        if content:
+            content.append({"type": "hardBreak"})
+        content.extend(_parse_inline(lines[index].strip()))
+        index += 1
+    return {"type": "paragraph", "content": content}, index
+
+
+def _starts_a_paragraph_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(">"):
+        return False
+    return not any(
+        pattern.match(stripped) is not None
+        for pattern in (_FENCE_PATTERN, _HEADING_PATTERN, _BULLET_PATTERN, _ORDERED_PATTERN)
+    )
+
+
+def _parse_inline(text: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    position = 0
+    # finditer yields non-overlapping matches left to right, so a match
+    # never starts before the text already consumed.
+    for match in _INLINE_PATTERN.finditer(text):
+        marked = _marked_text(match)
+        if marked is None:
+            continue
+        literal = text[position : match.start()]
+        if literal:
+            nodes.append({"type": "text", "text": literal})
+        nodes.append(marked)
+        position = match.end()
+
+    tail = text[position:]
+    if tail:
+        nodes.append({"type": "text", "text": tail})
+    return nodes
+
+
+def _marked_text(match: re.Match[str]) -> dict[str, Any] | None:
+    """The one marked text node for a delimiter match, or None to leave the
+    matched source literal (an empty link label has no text to mark)."""
+    if (code := match.group("code")) is not None:
+        return {"type": "text", "text": code, "marks": [{"type": "code"}]}
+    if (link_text := match.group("link_text")) is not None:
+        if not link_text:
+            return None
+        return {
+            "type": "text",
+            "text": link_text,
+            "marks": [{"type": "link", "attrs": {"href": match.group("href")}}],
+        }
+    if (strong := match.group("strong")) is not None:
+        return {"type": "text", "text": strong, "marks": [{"type": "strong"}]}
+    emphasis = match.group("em") or match.group("em_underscore")
+    return {"type": "text", "text": emphasis, "marks": [{"type": "em"}]}
+
+
 def _normalize_unknown_value(value: Any) -> Any:
     """Recursively normalize embedded ADF docs and timestamps in custom JSON."""
     if isinstance(value, dict):
