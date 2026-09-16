@@ -450,6 +450,81 @@ def _normalize_issue_link(
     return {"relationship": relationship, "issue": issue}
 
 
+def normalize_comment(raw: Any, path: str, problems: list[NormalizationProblem]) -> Comment | None:
+    """Normalize one raw Jira comment; return None if a required part is unusable.
+
+    `id`, `created`, `author`, and `body` are required for a comment to be
+    minimally useful, matching how a search item is dropped when its `key` is
+    unusable. `updated`/`updated_by` are optional and are simply omitted, not
+    dropped, when malformed.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    comment_id = _required_string(raw, "id", path, problems)
+
+    created_raw = raw.get("created")
+    created: str | None = None
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            created = to_utc_iso(created_raw)
+        except ValueError:
+            _add_problem(
+                problems,
+                f"{path}.created",
+                "expected an ISO-8601 timestamp with an explicit offset",
+            )
+    else:
+        _add_problem(problems, f"{path}.created", "expected a non-empty string")
+
+    author = _normalize_user(raw.get("author"), f"{path}.author", problems)
+
+    body_raw = raw.get("body")
+    body: str | None = None
+    if isinstance(body_raw, dict):
+        body = adf_to_markdown(body_raw)
+    else:
+        _add_problem(problems, f"{path}.body", "expected an ADF document object")
+
+    if comment_id is None or created is None or author is None or body is None:
+        return None
+
+    updated: str | None = None
+    updated_by: User | None = None
+    updated_raw = raw.get("updated")
+    if isinstance(updated_raw, str) and updated_raw:
+        try:
+            updated_norm = to_utc_iso(updated_raw)
+        except ValueError:
+            _add_problem(
+                problems,
+                f"{path}.updated",
+                "expected an ISO-8601 timestamp with an explicit offset",
+            )
+        else:
+            if updated_norm != created:
+                updated = updated_norm
+                update_author_raw = raw.get("updateAuthor")
+                if update_author_raw is not None:
+                    update_author = _normalize_user(
+                        update_author_raw, f"{path}.updateAuthor", problems
+                    )
+                    if update_author is not None and update_author.account_id != author.account_id:
+                        updated_by = update_author
+    elif updated_raw is not None:
+        _add_problem(problems, f"{path}.updated", "expected a string")
+
+    return Comment(
+        id=comment_id,
+        author=author,
+        body=body,
+        created=created,
+        updated=updated,
+        updated_by=updated_by,
+    )
+
+
 def normalize_issue_fields(raw_fields: dict[str, Any], *, path: str = "$.fields") -> dict[str, Any]:
     """Normalize a raw Jira `fields` object into its compact response form.
 
