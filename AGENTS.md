@@ -1,7 +1,8 @@
 # jira-mini-mcp
 
-Minimal read-only Jira MCP server for coding agents. Keep the public surface
-small, predictable, compact, and suitable for direct installation from GitHub.
+Minimal Jira MCP server for coding agents: broad reads, and a deliberately
+narrow write surface. Keep the public surface small, predictable, compact, and
+suitable for direct installation from GitHub.
 
 ## Always-applicable rules
 

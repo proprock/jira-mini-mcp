@@ -40,10 +40,16 @@ credentials/data. Do not commit raw captured responses, even from the test
 tenant. Keep any temporary capture outside the repository, transform it into a
 synthetic fixture, review it for sensitive data, and delete the capture.
 
-Write endpoints cannot be observed read-only, so they follow a stricter form of
-the same rule. Exercise them only on the dedicated non-production test site,
-only against throwaway issues created for that purpose, and never on a tenant
-holding real work. Record the method, path, and request body you sent together
+Write endpoints cannot be observed read-only, so they follow a different form of
+the same rule. Exercise them only against a disposable issue created for that
+purpose by the site owner, and never against an issue holding real work. A
+separate non-production site is not required and is not always desirable: a real
+workflow -- many transitions, transition names that differ from their target
+status names, two transitions reaching one status -- is evidence a default
+sandbox cannot provide. Restoring the issue afterwards is optional when it is
+disposable; the fixture provenance says what was changed.
+
+Record the method, path, and request body you sent together
 with the status and response body observed: a write mock has to assert the
 request, not only the parsed result. Do not provoke write failures repeatedly
 against the live service. Construct a 400 on an invalid transition, a 403 on a
@@ -136,8 +142,10 @@ Contract tests must also verify:
   failure/cancellation, and are cleaned up at normal server shutdown.
 
 At the MCP boundary, use an in-process client to assert discovery advertises
-exactly the six public tools, including their descriptions, defaults, input
-schemas, output schemas, and read-only/idempotent annotations. Invoke every tool
+exactly the published tools, including their descriptions, defaults, input
+schemas, output schemas, and annotations -- read-only and idempotent for a read
+tool, and honest `readOnlyHint`/`destructiveHint`/`idempotentHint` values for a
+write tool, since `READ_ONLY_MODE` gates on them. Invoke every tool
 through that boundary. Add one stdio subprocess smoke test and verify the shared
 HTTP client and temporary cache each have one lifespan and close exactly once.
 

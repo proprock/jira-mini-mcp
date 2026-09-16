@@ -210,3 +210,41 @@ class TestRaiseForResponse:
         with pytest.raises(errors.JiraValidationError) as exc_info:
             errors.raise_for_response(response, operation="get_issue")
         assert exc_info.value.status_code == 409
+
+
+class TestJiraSuppliedDetailRedaction:
+    """Jira's own error text is the one place a tenant URL can reach the
+    model through an otherwise sanitized message."""
+
+    def test_a_link_in_an_error_message_is_removed(self) -> None:
+        response = _response(
+            403,
+            json={"errorMessages": ["See https://tenant.atlassian.net/browse/ABC-1 for details."]},
+        )
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            errors.raise_for_response(response, operation="get_issue")
+
+        message = str(exc_info.value)
+        assert "tenant.atlassian.net" not in message
+        assert "http" not in message
+        assert "[link removed]" in message
+        # The part a caller can act on survives.
+        assert "for details" in message
+
+    def test_a_link_in_a_field_error_is_removed(self) -> None:
+        response = _response(
+            400,
+            json={"errors": {"assignee": "Pick a user at http://tenant.atlassian.net/people"}},
+        )
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            errors.raise_for_response(response, operation="update_issue")
+
+        message = str(exc_info.value)
+        assert "tenant.atlassian.net" not in message
+        assert "assignee" in message
+
+    def test_ordinary_error_text_is_untouched(self) -> None:
+        response = _response(400, json={"errorMessages": ["Field 'x' cannot be set."]})
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            errors.raise_for_response(response, operation="update_issue")
+        assert "Field 'x' cannot be set." in str(exc_info.value)

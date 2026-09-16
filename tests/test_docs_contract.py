@@ -31,6 +31,9 @@ TOOL_NAMES = frozenset(
         "get_attachments",
         "download_attachment",
         "get_changelog",
+        "add_comment",
+        "transition_issue",
+        "update_issue",
     }
 )
 

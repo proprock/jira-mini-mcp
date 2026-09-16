@@ -1,4 +1,4 @@
-"""MCP server wiring: registers the six read-only Jira tools over stdio.
+"""MCP server wiring: registers the Jira tools over stdio.
 
 Registration goes through `_TOOL_SPECS` rather than a straight run of
 `add_tool` calls so READ_ONLY_MODE can filter it on each tool's read-only
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import sys
 import tempfile
@@ -45,10 +46,35 @@ from jira_mini_mcp.models import (
     IssueSummary,
     Page,
     SearchPage,
+    TransitionResult,
+    UpdateResult,
     User,
 )
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
+
+# Write annotations are what READ_ONLY_MODE gates on, so they state what
+# each tool really does: adding a comment only appends, setting fields
+# overwrites but lands in the same state when repeated, and replaying a
+# transition from the status it produced usually fails outright.
+_WRITE_ADDITIVE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+_WRITE_UPDATE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=True,
+)
+_WRITE_TRANSITION = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
 
 
 @dataclass(frozen=True)
@@ -225,6 +251,20 @@ def _dump_changelog_page(page: Page[ChangelogEntry]) -> dict[str, Any]:
     }
 
 
+def _dump_transition_result(result: TransitionResult) -> dict[str, Any]:
+    """Flat on purpose: the transition's own name and the status it produced
+    are different things, and an agent that conflates them picks wrong."""
+    return {
+        "key": result.key,
+        "transition": {"id": result.transition.id, "name": result.transition.name},
+        "status": result.transition.status,
+    }
+
+
+def _dump_update_result(result: UpdateResult) -> dict[str, Any]:
+    return {"key": result.key, "updated_fields": list(result.updated_fields)}
+
+
 async def search_issues(
     jql: str,
     ctx: Context[AppContext],
@@ -295,6 +335,28 @@ async def get_changelog(
     return _dump_changelog_page(page)
 
 
+async def add_comment(issue_key: str, body: str, ctx: Context[AppContext]) -> dict[str, Any]:
+    comment = await _call(_jira_client(ctx).add_comment(issue_key, body))
+    return _dump_comment(comment)
+
+
+async def transition_issue(
+    issue_key: str,
+    to: str,
+    ctx: Context[AppContext],
+    comment: str | None = None,
+) -> dict[str, Any]:
+    result = await _call(_jira_client(ctx).transition_issue(issue_key, to, comment=comment))
+    return _dump_transition_result(result)
+
+
+async def update_issue(
+    issue_key: str, fields: dict[str, Any], ctx: Context[AppContext]
+) -> dict[str, Any]:
+    result = await _call(_jira_client(ctx).update_issue(issue_key, fields))
+    return _dump_update_result(result)
+
+
 _TOOL_SPECS: tuple[_ToolSpec, ...] = (
     _ToolSpec(
         search_issues,
@@ -359,6 +421,46 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
         ),
         _READ_ONLY,
     ),
+    _ToolSpec(
+        add_comment,
+        (
+            "Add one comment to an issue. body is Markdown -- headings, lists, "
+            "fenced code blocks, bold/italic, inline code, links -- converted to "
+            "Jira's rich text; anything outside that set stays literal. Returns "
+            "the created comment in the same shape get_comments returns. This "
+            "server cannot edit or delete a comment afterwards."
+        ),
+        _WRITE_ADDITIVE,
+    ),
+    _ToolSpec(
+        transition_issue,
+        (
+            "Move an issue through its workflow. to is a transition name or the "
+            "name of the status to reach, matched ignoring case and surrounding "
+            "space. A transition's name often differs from the status it leads "
+            "to (a transition called 'In Progress' can produce status 'In "
+            "Development'), and two transitions can reach one status, so prefer "
+            "the transition name; if nothing matches, the error lists every "
+            "available transition and its resulting status. comment is Markdown "
+            "and is posted in the same call as the move. Changes issue state."
+        ),
+        _WRITE_TRANSITION,
+    ),
+    _ToolSpec(
+        update_issue,
+        (
+            "Set issue fields, taking the same values get_issue returns: summary "
+            "as text, description as Markdown, assignee as an account id or the "
+            'literal "me", labels as a list, components and priority by name, '
+            "duedate as YYYY-MM-DD, parent as an issue key, and any "
+            "customfield_* or unknown field as raw Jira JSON. null clears "
+            "assignee, description, priority, parent, or duedate. labels and "
+            "components REPLACE the whole list, so read the issue first if you "
+            "mean to add one. Cannot change status (use transition_issue) or add "
+            "a comment (use add_comment)."
+        ),
+        _WRITE_UPDATE,
+    ),
 )
 
 
@@ -396,7 +498,21 @@ def create_server(
     return server
 
 
+def _silence_request_logging() -> None:
+    """Keep the tenant URL out of whatever log the host is running.
+
+    httpx2 logs every request line at INFO, which includes the configured
+    Jira host and the full query string -- a JQL query among it. A host
+    that turns on INFO logging would collect exactly what AGENTS.md says
+    never to log. Done here rather than at import time: a process's logging
+    configuration belongs to whoever owns the process, and this function
+    owns only the shipped stdio entry point.
+    """
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
+
+
 def main() -> None:
+    _silence_request_logging()
     read_only_mode = load_read_only_mode()
     if read_only_mode:
         # Announce only the non-default mode: the default is evident from

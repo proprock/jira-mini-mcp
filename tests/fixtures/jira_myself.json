@@ -1,0 +1,26 @@
+{
+  "_provenance": "Response shape observed live 2026-09-16 against GET /rest/api/3/myself on a Jira Cloud site. Confirmed: the body carries self, accountId, accountType, emailAddress, avatarUrls, displayName, active, timeZone, locale, groups, applicationRoles, and expand. Only accountId is used, to resolve assignee=\"me\"; the rest is discarded by normalization. All tenant, account, and personal values are synthesized.",
+  "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=5b10a2844c20165700ede21g",
+  "accountId": "5b10a2844c20165700ede21g",
+  "accountType": "atlassian",
+  "emailAddress": "agent@example.com",
+  "avatarUrls": {
+    "48x48": "https://synthetic-avatars.example.invalid/48.png",
+    "24x24": "https://synthetic-avatars.example.invalid/24.png",
+    "16x16": "https://synthetic-avatars.example.invalid/16.png",
+    "32x32": "https://synthetic-avatars.example.invalid/32.png"
+  },
+  "displayName": "Dana Agent",
+  "active": true,
+  "timeZone": "America/New_York",
+  "locale": "en_US",
+  "groups": {
+    "size": 2,
+    "items": []
+  },
+  "applicationRoles": {
+    "size": 1,
+    "items": []
+  },
+  "expand": "groups,applicationRoles"
+}

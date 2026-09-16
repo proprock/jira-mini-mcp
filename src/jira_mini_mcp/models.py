@@ -137,6 +137,37 @@ class ChangelogEntry:
     changes: list[ChangelogChange] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class Transition:
+    """One workflow transition and the status it leads to.
+
+    Jira names a transition independently of its target status -- a
+    transition called "In Progress" can lead to a status called "In
+    Development", and two differently named transitions can reach one
+    status -- so both names have to survive normalization.
+    """
+
+    id: str
+    name: str
+    status: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TransitionResult:
+    """Which transition ran, and where it left the issue."""
+
+    key: str
+    transition: Transition
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    """Which fields `update_issue` sent, for the issue it sent them to."""
+
+    key: str
+    updated_fields: tuple[str, ...]
+
+
 # --- Normalization -----------------------------------------------------
 
 _TIMESTAMP_PATTERN = re.compile(
@@ -696,6 +727,22 @@ def normalize_comment(raw: Any, path: str, problems: list[NormalizationProblem])
         updated=updated,
         updated_by=updated_by,
     )
+
+
+def normalize_transition(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> Transition | None:
+    """Normalize one entry of GET /issue/{key}/transitions."""
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    identifier = _required_string(raw, "id", path, problems)
+    name = _required_string(raw, "name", path, problems)
+    status = _normalize_status(raw.get("to"), f"{path}.to", problems)
+    if identifier is None or name is None or status is None:
+        return None
+    return Transition(id=identifier, name=name, status=status)
 
 
 def normalize_attachment(

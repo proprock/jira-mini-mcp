@@ -1,13 +1,15 @@
 """Pure Jira Cloud REST API v3 client logic (no MCP dependencies).
 
 `JiraClient` grows by one method per later phase. All HTTP calls route
-through the private `_get` helper, which attaches auth, maps failures via
-`errors.raise_for_response`, and returns parsed JSON.
+through the private `_request` helper, which attaches auth, maps failures
+via `errors.raise_for_response`, and returns parsed JSON; `_get` is the
+read-only shorthand for it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -27,10 +29,15 @@ from jira_mini_mcp.models import (
     NormalizationProblem,
     Page,
     SearchPage,
+    Transition,
+    TransitionResult,
+    UpdateResult,
+    markdown_to_adf,
     normalize_attachment,
     normalize_changelog_entry,
     normalize_comment,
     normalize_issue_fields,
+    normalize_transition,
     to_utc_iso,
 )
 
@@ -91,6 +98,28 @@ CHANGELOG_PAGE_SIZE = 100
 # the fields object, so using it as a sentinel yields an empty fields object and
 # keeps explicit fields=[] from fetching and discarding the full field set.
 _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
+
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Fields update_issue refuses, each pointing at the tool that does the job
+# or saying plainly that this server does not do it.
+_UPDATE_REJECTED_FIELDS: dict[str, str] = {
+    "status": "Use transition_issue to move an issue through its workflow.",
+    "comment": "Use add_comment to comment on an issue.",
+    "attachment": "This server does not upload attachments.",
+    "issuelinks": (
+        "This server does not create or remove issue links. Put the link, or a "
+        "request to add it, in a comment with add_comment."
+    ),
+    "worklog": "This server does not log work.",
+    "project": "This server does not move issues between projects.",
+    "issuetype": "This server does not change an issue's type.",
+    "key": "Jira assigns the issue key; it cannot be set.",
+    "id": "Jira assigns the issue id; it cannot be set.",
+    "created": "Jira maintains 'created'; it cannot be set.",
+    "updated": "Jira maintains 'updated'; it cannot be set.",
+    "resolutiondate": "Jira maintains 'resolutiondate'; it cannot be set.",
+}
 
 
 def _joined_fields(fields: list[str] | None, default: tuple[str, ...]) -> str:
@@ -209,6 +238,91 @@ def _incomplete_response_error(
     )
 
 
+def _adf_or_validation_error(
+    markdown: str, *, operation: str, issue_key: str | None
+) -> dict[str, Any]:
+    """Convert a Markdown body, reporting an unusable one to the caller."""
+    try:
+        return markdown_to_adf(markdown)
+    except ValueError as exc:
+        raise errors.JiraValidationError(
+            str(exc), operation=operation, issue_key=issue_key
+        ) from exc
+
+
+def _update_type_error(name: str, expected: str, issue_key: str) -> errors.JiraValidationError:
+    return errors.JiraValidationError(
+        f"update_issue needs '{name}' as {expected}.",
+        operation="update_issue",
+        issue_key=issue_key,
+    )
+
+
+def _required_update_string(name: str, value: Any, issue_key: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value
+    raise _update_type_error(name, "a non-empty string", issue_key)
+
+
+def _required_update_string_list(name: str, value: Any, issue_key: str) -> list[str]:
+    if isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value):
+        return list(value)
+    raise _update_type_error(name, "a list of non-empty strings", issue_key)
+
+
+def _resolve_transition(transitions: list[Transition], to: str, *, issue_key: str) -> Transition:
+    """Pick the transition a caller meant, or say why none could be picked.
+
+    Transition name wins over target status name: in a real workflow two
+    transitions can lead to one status, and only the transition name tells
+    them apart.
+    """
+    wanted = to.strip().casefold()
+
+    by_transition_name = [item for item in transitions if item.name.casefold() == wanted]
+    if len(by_transition_name) == 1:
+        return by_transition_name[0]
+    if len(by_transition_name) > 1:
+        raise _ambiguous_transition_error(by_transition_name, to, issue_key)
+
+    by_status_name = [
+        item for item in transitions if str(item.status.get("name", "")).casefold() == wanted
+    ]
+    if len(by_status_name) == 1:
+        return by_status_name[0]
+    if len(by_status_name) > 1:
+        raise _ambiguous_transition_error(by_status_name, to, issue_key)
+
+    if not transitions:
+        raise errors.JiraValidationError(
+            f"No transition is available on {issue_key} for the configured account, "
+            "so its status cannot be changed.",
+            operation="transition_issue",
+            issue_key=issue_key,
+        )
+    raise errors.JiraValidationError(
+        f"No transition on {issue_key} matches '{to}'. Available transitions "
+        f"(transition -> resulting status): {_transition_list(transitions)}.",
+        operation="transition_issue",
+        issue_key=issue_key,
+    )
+
+
+def _ambiguous_transition_error(
+    candidates: list[Transition], to: str, issue_key: str
+) -> errors.JiraValidationError:
+    return errors.JiraValidationError(
+        f"'{to}' matches more than one transition on {issue_key}: "
+        f"{_transition_list(candidates)}. Name the transition itself.",
+        operation="transition_issue",
+        issue_key=issue_key,
+    )
+
+
+def _transition_list(transitions: list[Transition]) -> str:
+    return "; ".join(f"{item.name} -> {item.status.get('name', '?')}" for item in transitions)
+
+
 class JiraClient:
     """Pure Jira Cloud REST API v3 client. Holds no MCP dependency."""
 
@@ -225,18 +339,31 @@ class JiraClient:
         # Must already exist (created once by the MCP lifespan); this client
         # only creates the per-attachment subdirectory beneath it.
         self._cache_dir = cache_dir
+        # Resolved on first use by assignee="me"; one account per process.
+        self._account_id: str | None = None
 
-    async def _get(
+    async def _request(
         self,
+        method: str,
         path: str,
         *,
         operation: str,
         issue_key: str | None = None,
         params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        expect_json: bool = True,
     ) -> Any:
+        """Issue one Jira request: attach auth, map failures, parse the body.
+
+        Jira answers a successful write with 204 and no body, so
+        `expect_json=False` returns None instead of treating an empty
+        response as a parse failure.
+        """
         url = f"{self._base_url}{path}"
         try:
-            response = await self._client.get(url, params=params, auth=self._auth)
+            response = await self._client.request(
+                method, url, params=params, json=json_body, auth=self._auth
+            )
         except httpx2.TimeoutException as exc:
             raise errors.JiraTimeoutError(
                 f"Request timed out for operation '{operation}'. "
@@ -254,6 +381,9 @@ class JiraClient:
 
         errors.raise_for_response(response, operation=operation, issue_key=issue_key)
 
+        if not expect_json:
+            return None
+
         try:
             return response.json()
         except ValueError as exc:
@@ -262,6 +392,18 @@ class JiraClient:
                 operation=operation,
                 issue_key=issue_key,
             ) from exc
+
+    async def _get(
+        self,
+        path: str,
+        *,
+        operation: str,
+        issue_key: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        return await self._request(
+            "GET", path, operation=operation, issue_key=issue_key, params=params
+        )
 
     async def search_issues(
         self,
@@ -854,3 +996,224 @@ class JiraClient:
             )
 
         return result
+
+    async def add_comment(self, issue_key: str, body: str) -> Comment:
+        """Post one comment, written in Markdown, and return it normalized.
+
+        The result is the same `Comment` shape `get_comments` publishes:
+        Jira answers the POST with the created comment object, identical to
+        an item of the comment collection.
+        """
+        if not isinstance(body, str):
+            raise errors.JiraValidationError(
+                "add_comment needs the comment body as Markdown text.",
+                operation="add_comment",
+                issue_key=issue_key,
+            )
+        document = _adf_or_validation_error(body, operation="add_comment", issue_key=issue_key)
+
+        raw = await self._request(
+            "POST",
+            f"/rest/api/3/issue/{issue_key}/comment",
+            operation="add_comment",
+            issue_key=issue_key,
+            json_body={"body": document},
+        )
+
+        problems: list[NormalizationProblem] = []
+        comment = normalize_comment(raw, "$", problems)
+        if comment is None or problems:
+            raise _incomplete_response_error(
+                operation="add_comment",
+                issue_key=issue_key,
+                problems=[str(problem) for problem in problems] or ["$: expected a comment object"],
+                partial_result=asdict(comment) if comment is not None else {},
+            )
+        return comment
+
+    async def transition_issue(
+        self, issue_key: str, to: str, comment: str | None = None
+    ) -> TransitionResult:
+        """Move an issue through its workflow, optionally commenting.
+
+        Jira accepts only a workflow-specific transition id, so `to` is
+        resolved against the issue's available transitions: by transition
+        name first, then by target status name. Those differ in real
+        workflows -- a transition named "In Progress" can lead to a status
+        named "In Development" -- and two transitions can reach one status,
+        so an ambiguous match is reported rather than guessed.
+        """
+        if not isinstance(to, str) or not to.strip():
+            raise errors.JiraValidationError(
+                "transition_issue needs a target. Pass `to` as a transition name or "
+                "the name of the status to reach.",
+                operation="transition_issue",
+                issue_key=issue_key,
+            )
+
+        body = await self._get(
+            f"/rest/api/3/issue/{issue_key}/transitions",
+            operation="transition_issue",
+            issue_key=issue_key,
+        )
+        transitions = self._normalized_transitions(body, issue_key)
+        chosen = _resolve_transition(transitions, to, issue_key=issue_key)
+
+        payload: dict[str, Any] = {"transition": {"id": chosen.id}}
+        if comment is not None:
+            document = _adf_or_validation_error(
+                comment, operation="transition_issue", issue_key=issue_key
+            )
+            # One call, so the move and the note cannot land apart.
+            payload["update"] = {"comment": [{"add": {"body": document}}]}
+
+        await self._request(
+            "POST",
+            f"/rest/api/3/issue/{issue_key}/transitions",
+            operation="transition_issue",
+            issue_key=issue_key,
+            json_body=payload,
+            expect_json=False,
+        )
+        return TransitionResult(key=issue_key, transition=chosen)
+
+    def _normalized_transitions(self, body: Any, issue_key: str) -> list[Transition]:
+        if not isinstance(body, dict) or not isinstance(body.get("transitions"), list):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'transition_issue'.",
+                operation="transition_issue",
+                issue_key=issue_key,
+            )
+
+        problems: list[NormalizationProblem] = []
+        transitions: list[Transition] = []
+        for index, raw in enumerate(body["transitions"]):
+            transition = normalize_transition(raw, f"$.transitions[{index}]", problems)
+            if transition is not None:
+                transitions.append(transition)
+
+        if problems:
+            # Resolving against a partial list could report "no match" for a
+            # transition that exists, so a malformed entry stops the move.
+            raise _incomplete_response_error(
+                operation="transition_issue",
+                issue_key=issue_key,
+                problems=[str(problem) for problem in problems],
+                partial_result={
+                    "key": issue_key,
+                    "transitions": [asdict(transition) for transition in transitions],
+                },
+            )
+        return transitions
+
+    async def update_issue(self, issue_key: str, fields: dict[str, Any]) -> UpdateResult:
+        """Set issue fields, taking the same values `get_issue` returns.
+
+        Known fields accept friendly values; unknown and `customfield_*`
+        values pass through as raw Jira JSON, mirroring the read side. The
+        issue is not re-fetched: a caller wanting confirmation calls
+        `get_issue`.
+        """
+        if not isinstance(fields, dict) or not fields:
+            raise errors.JiraValidationError(
+                "update_issue needs at least one field to change, for example "
+                '{"labels": ["triage"]}.',
+                operation="update_issue",
+                issue_key=issue_key,
+            )
+
+        payload: dict[str, Any] = {}
+        for name, value in fields.items():
+            guidance = _UPDATE_REJECTED_FIELDS.get(name)
+            if guidance is not None:
+                raise errors.JiraValidationError(
+                    f"update_issue cannot set '{name}'. {guidance}",
+                    operation="update_issue",
+                    issue_key=issue_key,
+                )
+            payload[name] = await self._coerced_field(name, value, issue_key)
+
+        await self._request(
+            "PUT",
+            f"/rest/api/3/issue/{issue_key}",
+            operation="update_issue",
+            issue_key=issue_key,
+            json_body={"fields": payload},
+            expect_json=False,
+        )
+        return UpdateResult(key=issue_key, updated_fields=tuple(sorted(fields)))
+
+    async def _coerced_field(self, name: str, value: Any, issue_key: str) -> Any:
+        """Translate one friendly field value into Jira's own shape."""
+        if name == "assignee":
+            if value is None:
+                return None
+            account_id = _required_update_string(name, value, issue_key)
+            if account_id.strip().casefold() == "me":
+                account_id = await self._current_account_id(issue_key)
+            return {"accountId": account_id}
+
+        if name == "description":
+            if value is None:
+                return None
+            if not isinstance(value, str) or not value.strip():
+                raise _update_type_error(
+                    name, "non-empty Markdown text, or null to clear it", issue_key
+                )
+            return _adf_or_validation_error(value, operation="update_issue", issue_key=issue_key)
+
+        if name == "summary":
+            return _required_update_string(name, value, issue_key)
+
+        if name == "labels":
+            return _required_update_string_list(name, value, issue_key)
+
+        if name == "components":
+            return [{"name": item} for item in _required_update_string_list(name, value, issue_key)]
+
+        if name == "priority":
+            if value is None:
+                return None
+            return {"name": _required_update_string(name, value, issue_key)}
+
+        if name == "parent":
+            if value is None:
+                return None
+            return {"key": _required_update_string(name, value, issue_key)}
+
+        if name == "duedate":
+            if value is None:
+                return None
+            due = _required_update_string(name, value, issue_key)
+            if _DATE_PATTERN.fullmatch(due) is None:
+                raise errors.JiraValidationError(
+                    "update_issue needs 'duedate' as a YYYY-MM-DD date, or null to clear it.",
+                    operation="update_issue",
+                    issue_key=issue_key,
+                )
+            return due
+
+        # Unknown and customfield_* values are the caller's own Jira JSON,
+        # exactly as the read side keeps them.
+        return value
+
+    async def _current_account_id(self, issue_key: str) -> str:
+        """The configured account's own id, fetched once per process.
+
+        Jira assigns by account id, and an agent asked to "assign it to me"
+        has no way to know its own.
+        """
+        if self._account_id is not None:
+            return self._account_id
+
+        body = await self._get("/rest/api/3/myself", operation="update_issue")
+        account_id = body.get("accountId") if isinstance(body, dict) else None
+        if not isinstance(account_id, str) or not account_id:
+            raise errors.JiraServerError(
+                "Jira did not report an account id for the configured credentials, "
+                "so assignee='me' cannot be resolved. Pass an explicit account id.",
+                operation="update_issue",
+                issue_key=issue_key,
+            )
+        self._account_id = account_id
+        return account_id
