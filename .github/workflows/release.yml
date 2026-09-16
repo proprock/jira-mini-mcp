@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,8 +16,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.1.0
@@ -47,10 +56,10 @@ jobs:
           Six tools: search_issues, get_issue, get_comments, get_attachments, download_attachment, get_changelog. Configuration is exactly three environment variables: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN.
 
           Install and run directly from this tag:
-          uvx --from git+https://github.com/proprock/jira-mini-mcp@${GITHUB_REF_NAME} jira-mini-mcp
+          uvx --from git+https://github.com/proprock/jira-mini-mcp@${RELEASE_TAG} jira-mini-mcp
 
           See README.md for setup and tool details. Not yet published to PyPI.
           EOF
-          gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz \
-            --title "${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" dist/*.whl dist/*.tar.gz \
+            --title "${RELEASE_TAG}" \
             --notes-file release-notes.md
