@@ -26,10 +26,9 @@
   "expected_normalized_fields": {
     "summary": "Investigate slow changelog pagination",
     "status": {
-      "self": "https://synthetic-tenant.atlassian.net/rest/api/3/status/3",
       "id": "3",
       "name": "In Progress",
-      "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress" }
+      "category": "indeterminate"
     },
     "assignee": { "account_id": "syn-acc-201", "display_name": "Morgan Diaz" },
     "updated": "2026-09-15T22:15:13Z"

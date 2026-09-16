@@ -198,6 +198,18 @@ class TestSearchIssues:
         assert first_item.key == "SYN-201"
         assert first_item.fields["summary"] == "Search index falls behind after bulk import"
         assert first_item.fields["assignee"].account_id == "syn-acc-101"
+        assert first_item.fields["issuetype"] == {"id": "10001", "name": "Bug"}
+        assert first_item.fields["status"] == {
+            "id": "3",
+            "name": "In Progress",
+            "category": "indeterminate",
+        }
+        assert first_item.fields["priority"] == {"id": "2", "name": "High"}
+        assert first_item.fields["project"] == {
+            "id": "10000",
+            "key": "SYN",
+            "name": "Synthetic Project",
+        }
         assert "self" not in first_item.fields
         second_item = result.items[1]
         assert "assignee" not in second_item.fields  # null assignee is omitted, not null
@@ -227,6 +239,106 @@ class TestSearchIssues:
 
         with pytest.raises(errors.JiraServerError):
             await client.search_issues("project = SYN")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            [],
+            {"issues": [], "nextPageToken": 123},
+        ],
+    )
+    async def test_malformed_search_envelope_raises_server_error(self, body: Any) -> None:
+        handler, _ = _recording_handler(_json_response(200, body))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.search_issues("project = SYN")
+
+    @pytest.mark.parametrize(
+        ("raw_issue", "problem"),
+        [
+            ("not-an-object", "$.issues[0]: expected an object"),
+            (
+                {"key": "SYN-1", "fields": "not-an-object"},
+                "$.issues[0].fields: expected an object",
+            ),
+        ],
+    )
+    async def test_malformed_search_item_keeps_only_clean_partial_data(
+        self, raw_issue: Any, problem: str
+    ) -> None:
+        handler, _ = _recording_handler(_json_response(200, {"issues": [raw_issue]}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.search_issues("project = SYN")
+
+        assert exc_info.value.problems == (problem,)
+
+    async def test_null_search_fields_are_treated_as_absent(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"issues": [{"key": "SYN-1", "fields": None}]})
+        )
+        client = _make_client(handler)
+
+        result = await client.search_issues("project = SYN")
+
+        assert result.items == [IssueSummary(key="SYN-1", fields={})]
+
+    async def test_malformed_resource_raises_with_sanitized_partial_search_page(self) -> None:
+        raw = {
+            "issues": [
+                {"key": "SYN-1", "fields": {"summary": "Valid"}},
+                {
+                    "key": "SYN-2",
+                    "fields": {
+                        "summary": "Partially valid",
+                        "priority": {
+                            "id": 2,
+                            "name": "High",
+                            "self": "https://synthetic-tenant.atlassian.net/priority/2",
+                        },
+                    },
+                },
+            ],
+            "nextPageToken": "synthetic-next",
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.search_issues("project = SYN")
+
+        assert exc_info.value.problems == (
+            "$.issues[1].fields.priority.id: expected a non-empty string",
+        )
+        assert exc_info.value.partial_result == {
+            "items": [
+                {"key": "SYN-1", "fields": {"summary": "Valid"}},
+                {"key": "SYN-2", "fields": {"summary": "Partially valid"}},
+            ],
+            "next_page_token": "synthetic-next",
+        }
+        assert "synthetic-tenant" not in repr(exc_info.value.partial_result)
+
+    async def test_missing_issue_key_is_reported_without_losing_valid_items(self) -> None:
+        raw = {
+            "issues": [
+                {"key": "SYN-1", "fields": {"summary": "Valid"}},
+                {"id": "10002", "fields": {"summary": "No key"}},
+            ]
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.search_issues("project = SYN")
+
+        assert exc_info.value.problems == ("$.issues[1].key: expected a non-empty string",)
+        assert exc_info.value.partial_result == {
+            "items": [{"key": "SYN-1", "fields": {"summary": "Valid"}}],
+            "next_page_token": None,
+        }
 
     async def test_response_has_only_items_and_next_page_token_fields(self) -> None:
         field_names = {f.name for f in dataclasses.fields(SearchPage)}
@@ -282,10 +394,9 @@ class TestGetIssue:
         assert seen[0].url.params["fields"] == "summary"
 
     async def test_empty_fields_list_uses_sentinel_not_upstream_default(self) -> None:
-        # Jira Cloud v3's single-issue GET treats fields="" as "unspecified"
-        # and returns every navigable field (observed live) -- passing "" here
-        # would silently defeat fields=[]. A sentinel that matches no real
-        # field id is required instead.
+        # Jira Cloud v3's single-issue GET treats fields="" and fields=-* as
+        # unspecified and returns a tenant- and permission-dependent full set.
+        # The non-field issue id is a stable sentinel for an empty fields object.
         handler, seen = _recording_handler(_json_response(200, {"key": "SYN-1", "fields": {}}))
         client = _make_client(handler)
 
@@ -314,7 +425,37 @@ class TestGetIssue:
         assert result.fields["summary"] == fixture["expected_normalized_fields"]["summary"]
         assert result.fields["updated"] == fixture["expected_normalized_fields"]["updated"]
         assert result.fields["assignee"].account_id == "syn-acc-201"
+        assert result.fields["status"] == {
+            "id": "3",
+            "name": "In Progress",
+            "category": "indeterminate",
+        }
         assert "resolutiondate" not in result.fields  # null is omitted, not emitted as null
+
+    async def test_malformed_resource_raises_with_sanitized_partial_issue(self) -> None:
+        raw = {
+            "key": "SYN-1",
+            "fields": {
+                "summary": "Useful",
+                "project": {
+                    "id": "10000",
+                    "name": "Missing key",
+                    "self": "https://synthetic-tenant.atlassian.net/project/10000",
+                },
+            },
+        }
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_issue("SYN-1")
+
+        assert exc_info.value.problems == ("$.fields.project.key: expected a non-empty string",)
+        assert exc_info.value.partial_result == {
+            "key": "SYN-1",
+            "fields": {"summary": "Useful"},
+        }
+        assert "synthetic-tenant" not in repr(exc_info.value.partial_result)
 
     async def test_omits_comments_attachments_changelog_even_if_present_in_raw_envelope(
         self,
@@ -348,6 +489,31 @@ class TestGetIssue:
 
         with pytest.raises(errors.JiraServerError):
             await client.get_issue("SYN-1")
+
+    async def test_non_object_issue_envelope_raises_server_error(self) -> None:
+        handler, _ = _recording_handler(_json_response(200, []))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError):
+            await client.get_issue("SYN-1")
+
+    async def test_null_issue_fields_are_treated_as_absent(self) -> None:
+        handler, _ = _recording_handler(_json_response(200, {"key": "SYN-1", "fields": None}))
+        client = _make_client(handler)
+
+        assert await client.get_issue("SYN-1") == IssueDetail(key="SYN-1", fields={})
+
+    async def test_non_object_issue_fields_raise_with_clean_partial_result(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, {"key": "SYN-1", "fields": "not-an-object"})
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await client.get_issue("SYN-1")
+
+        assert exc_info.value.problems == ("$.fields: expected an object",)
+        assert exc_info.value.partial_result == {"key": "SYN-1", "fields": {}}
 
     @pytest.mark.parametrize(
         ("status", "exc_class"),

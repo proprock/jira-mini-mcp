@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx2
 import pytest
 
@@ -34,6 +36,7 @@ ALL_EXCEPTION_CLASSES = [
     errors.JiraTimeoutError,
     errors.JiraServerError,
     errors.JiraNetworkError,
+    errors.JiraIncompleteResponseError,
 ]
 
 
@@ -81,6 +84,19 @@ class TestExceptionHierarchy:
         assert not issubclass(errors.JiraTimeoutError, type(TimeoutError()))
         assert errors.JiraPermissionError.__name__ == "JiraPermissionError"
         assert errors.JiraTimeoutError.__name__ == "JiraTimeoutError"
+
+    def test_incomplete_response_carries_json_ready_partial_result(self) -> None:
+        exc = errors.JiraIncompleteResponseError(
+            "Jira returned incomplete data for operation 'get_issue'.",
+            operation="get_issue",
+            problems=("$.fields.status.id: expected a non-empty string",),
+            partial_result={"key": "SYN-1", "fields": {"summary": "Useful"}},
+        )
+
+        assert exc.problems == ("$.fields.status.id: expected a non-empty string",)
+        assert json.dumps(exc.partial_result) == (
+            '{"key": "SYN-1", "fields": {"summary": "Useful"}}'
+        )
 
 
 class TestRaiseForResponse:

@@ -7,13 +7,20 @@ through the private `_get` helper, which attaches auth, maps failures via
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 import httpx2
 
 from jira_mini_mcp import errors
 from jira_mini_mcp.auth import BasicTokenAuth
-from jira_mini_mcp.models import IssueDetail, IssueSummary, SearchPage, normalize_issue_fields
+from jira_mini_mcp.models import (
+    IncompleteNormalizationError,
+    IssueDetail,
+    IssueSummary,
+    SearchPage,
+    normalize_issue_fields,
+)
 
 SEARCH_DEFAULT_FIELDS: tuple[str, ...] = (
     "summary",
@@ -44,13 +51,11 @@ ISSUE_DEFAULT_FIELDS: tuple[str, ...] = (
     "subtasks",
 )
 
-# Jira Cloud v3's single-issue GET treats fields="" as "unspecified" and
-# returns every navigable field (~87 on a real tenant), unlike the enhanced
-# search endpoint, where fields="" correctly returns no fields at all.
-# Observed live on a Jira Cloud site 2026-09-16. A field id that is never a
-# real `fields` entry -- the issue `id` lives outside the fields object --
-# reliably yields an empty fields object instead, so an explicit fields=[]
-# still avoids fetching (and discarding) the full field set.
+# Jira Cloud v3's single-issue GET treats fields="" and fields=-* as
+# "unspecified" and returns a tenant- and permission-dependent full field set.
+# Observed live on a Jira Cloud site 2026-09-16. The issue `id` lives outside
+# the fields object, so using it as a sentinel yields an empty fields object and
+# keeps explicit fields=[] from fetching and discarding the full field set.
 _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
 
 
@@ -58,6 +63,23 @@ def _joined_fields(fields: list[str] | None, default: tuple[str, ...]) -> str:
     if fields is None:
         return ",".join(default)
     return ",".join(fields)
+
+
+def _incomplete_response_error(
+    *,
+    operation: str,
+    problems: list[str],
+    partial_result: dict[str, Any],
+    issue_key: str | None = None,
+) -> errors.JiraIncompleteResponseError:
+    details = "; ".join(problems)
+    return errors.JiraIncompleteResponseError(
+        f"Jira returned incomplete data for operation '{operation}': {details}",
+        operation=operation,
+        issue_key=issue_key,
+        problems=tuple(problems),
+        partial_result=partial_result,
+    )
 
 
 class JiraClient:
@@ -128,19 +150,60 @@ class JiraClient:
 
         body = await self._get("/rest/api/3/search/jql", operation="search_issues", params=params)
 
-        try:
-            items = [
-                IssueSummary(
-                    key=issue["key"], fields=normalize_issue_fields(issue.get("fields", {}))
-                )
-                for issue in body.get("issues", []) or []
-            ]
-            next_page_token = body.get("nextPageToken")
-        except (KeyError, TypeError, AttributeError) as exc:
+        if not isinstance(body, dict):
             raise errors.JiraServerError(
                 "Jira returned an unexpected response shape for operation 'search_issues'.",
                 operation="search_issues",
-            ) from exc
+            )
+
+        raw_issues = body.get("issues", [])
+        next_page_token = body.get("nextPageToken")
+        if not isinstance(raw_issues, list) or not (
+            next_page_token is None or isinstance(next_page_token, str)
+        ):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'search_issues'.",
+                operation="search_issues",
+            )
+
+        items: list[IssueSummary] = []
+        problems: list[str] = []
+        for index, issue in enumerate(raw_issues):
+            issue_path = f"$.issues[{index}]"
+            if not isinstance(issue, dict):
+                problems.append(f"{issue_path}: expected an object")
+                continue
+            key = issue.get("key")
+            if not isinstance(key, str) or not key:
+                problems.append(f"{issue_path}.key: expected a non-empty string")
+                continue
+
+            raw_fields = issue.get("fields", {})
+            if raw_fields is None:
+                raw_fields = {}
+            if not isinstance(raw_fields, dict):
+                problems.append(f"{issue_path}.fields: expected an object")
+                normalized_fields: dict[str, Any] = {}
+            else:
+                try:
+                    normalized_fields = normalize_issue_fields(
+                        raw_fields, path=f"{issue_path}.fields"
+                    )
+                except IncompleteNormalizationError as exc:
+                    normalized_fields = exc.partial_value
+                    problems.extend(str(problem) for problem in exc.problems)
+            items.append(IssueSummary(key=key, fields=normalized_fields))
+
+        if problems:
+            partial_result = {
+                "items": [asdict(item) for item in items],
+                "next_page_token": next_page_token,
+            }
+            raise _incomplete_response_error(
+                operation="search_issues",
+                problems=problems,
+                partial_result=partial_result,
+            )
 
         return SearchPage(items=items, next_page_token=next_page_token)
 
@@ -157,14 +220,42 @@ class JiraClient:
             params={"fields": fields_param},
         )
 
-        try:
-            key = body["key"]
-            normalized_fields = normalize_issue_fields(body.get("fields", {}) or {})
-        except (KeyError, TypeError, AttributeError) as exc:
+        if not isinstance(body, dict):
             raise errors.JiraServerError(
                 "Jira returned an unexpected response shape for operation 'get_issue'.",
                 operation="get_issue",
                 issue_key=issue_key,
-            ) from exc
+            )
 
-        return IssueDetail(key=key, fields=normalized_fields)
+        key = body.get("key")
+        if not isinstance(key, str) or not key:
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for operation 'get_issue'.",
+                operation="get_issue",
+                issue_key=issue_key,
+            )
+
+        raw_fields = body.get("fields", {})
+        problems: list[str] = []
+        if raw_fields is None:
+            raw_fields = {}
+        if not isinstance(raw_fields, dict):
+            normalized_fields: dict[str, Any] = {}
+            problems.append("$.fields: expected an object")
+        else:
+            try:
+                normalized_fields = normalize_issue_fields(raw_fields)
+            except IncompleteNormalizationError as exc:
+                normalized_fields = exc.partial_value
+                problems.extend(str(problem) for problem in exc.problems)
+
+        result = IssueDetail(key=key, fields=normalized_fields)
+        if problems:
+            raise _incomplete_response_error(
+                operation="get_issue",
+                issue_key=issue_key,
+                problems=problems,
+                partial_result=asdict(result),
+            )
+
+        return result

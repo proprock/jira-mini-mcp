@@ -22,6 +22,30 @@ class User:
 
 
 @dataclass(frozen=True)
+class NormalizationProblem:
+    """One sanitized problem found while normalizing a Jira response."""
+
+    path: str
+    reason: str
+
+    def __str__(self) -> str:
+        return f"{self.path}: {self.reason}"
+
+
+class IncompleteNormalizationError(ValueError):
+    """Known Jira resources were malformed, but a clean partial value exists."""
+
+    def __init__(
+        self,
+        partial_value: dict[str, Any],
+        problems: list[NormalizationProblem],
+    ) -> None:
+        self.partial_value = partial_value
+        self.problems = tuple(problems)
+        super().__init__("; ".join(str(problem) for problem in problems))
+
+
+@dataclass(frozen=True)
 class Page[T]:
     """A logical, offset-paginated collection (comments, changelog)."""
 
@@ -244,7 +268,189 @@ KNOWN_FIELDS = frozenset(
 )
 
 
-def normalize_issue_fields(raw_fields: dict[str, Any]) -> dict[str, Any]:
+def _add_problem(problems: list[NormalizationProblem], path: str, reason: str) -> None:
+    problems.append(NormalizationProblem(path=path, reason=reason))
+
+
+def _required_string(
+    raw: dict[str, Any],
+    key: str,
+    path: str,
+    problems: list[NormalizationProblem],
+) -> str | None:
+    value = raw.get(key)
+    if isinstance(value, str) and value:
+        return value
+    _add_problem(problems, f"{path}.{key}", "expected a non-empty string")
+    return None
+
+
+def _normalize_named_resource(
+    raw: Any,
+    path: str,
+    problems: list[NormalizationProblem],
+    *,
+    require_key: bool = False,
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    resource_id = _required_string(raw, "id", path, problems)
+    name = _required_string(raw, "name", path, problems)
+    key = _required_string(raw, "key", path, problems) if require_key else None
+    if resource_id is None or name is None or (require_key and key is None):
+        return None
+
+    result = {"id": resource_id}
+    if require_key:
+        result["key"] = key
+    result["name"] = name
+    return result
+
+
+def _normalize_issuetype(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    result = _normalize_named_resource(raw, path, problems)
+    if result is None:
+        return None
+
+    hierarchy_level = raw.get("hierarchyLevel")
+    if hierarchy_level is None:
+        return result
+    if isinstance(hierarchy_level, int) and not isinstance(hierarchy_level, bool):
+        result["hierarchy_level"] = hierarchy_level
+    else:
+        _add_problem(problems, f"{path}.hierarchyLevel", "expected an integer")
+    return result
+
+
+def _normalize_status(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    result = _normalize_named_resource(raw, path, problems)
+    if result is None:
+        return None
+
+    status_category = raw.get("statusCategory")
+    if status_category is None:
+        return result
+    if not isinstance(status_category, dict):
+        _add_problem(problems, f"{path}.statusCategory", "expected an object")
+        return result
+
+    category = status_category.get("key")
+    if category is None:
+        return result
+    if isinstance(category, str) and category:
+        result["category"] = category
+    else:
+        _add_problem(
+            problems,
+            f"{path}.statusCategory.key",
+            "expected a non-empty string",
+        )
+    return result
+
+
+def _normalize_user(raw: Any, path: str, problems: list[NormalizationProblem]) -> User | None:
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+    account_id = _required_string(raw, "accountId", path, problems)
+    display_name = _required_string(raw, "displayName", path, problems)
+    if account_id is None or display_name is None:
+        return None
+    return User(account_id=account_id, display_name=display_name)
+
+
+def _normalize_issue_reference(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+    key = _required_string(raw, "key", path, problems)
+    if key is None:
+        return None
+
+    result: dict[str, Any] = {"key": key}
+    raw_fields = raw.get("fields")
+    if raw_fields is None:
+        return result
+    if not isinstance(raw_fields, dict):
+        _add_problem(problems, f"{path}.fields", "expected an object")
+        return result
+
+    summary = raw_fields.get("summary")
+    if summary is not None:
+        if isinstance(summary, str):
+            result["summary"] = summary
+        else:
+            _add_problem(problems, f"{path}.fields.summary", "expected a string")
+
+    status = raw_fields.get("status")
+    if status is not None:
+        normalized_status = _normalize_status(status, f"{path}.fields.status", problems)
+        if normalized_status is not None:
+            result["status"] = normalized_status
+
+    issue_type = raw_fields.get("issuetype")
+    if issue_type is not None:
+        normalized_type = _normalize_issuetype(issue_type, f"{path}.fields.issuetype", problems)
+        if normalized_type is not None:
+            result["issuetype"] = normalized_type
+    return result
+
+
+def _normalize_resource_list(
+    raw: Any,
+    path: str,
+    problems: list[NormalizationProblem],
+    normalizer: Any,
+) -> list[dict[str, Any]] | None:
+    if not isinstance(raw, list):
+        _add_problem(problems, path, "expected an array")
+        return None
+    result: list[dict[str, Any]] = []
+    for index, value in enumerate(raw):
+        normalized = normalizer(value, f"{path}[{index}]", problems)
+        if normalized is not None:
+            result.append(normalized)
+    return result
+
+
+def _normalize_issue_link(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+
+    directions = [name for name in ("inwardIssue", "outwardIssue") if name in raw]
+    if len(directions) != 1:
+        _add_problem(
+            problems,
+            path,
+            "expected exactly one of inwardIssue or outwardIssue",
+        )
+        return None
+
+    direction = directions[0]
+    relationship_key = "inward" if direction == "inwardIssue" else "outward"
+    link_type = raw.get("type")
+    if not isinstance(link_type, dict):
+        _add_problem(problems, f"{path}.type", "expected an object")
+        return None
+    relationship = _required_string(link_type, relationship_key, f"{path}.type", problems)
+    issue = _normalize_issue_reference(raw.get(direction), f"{path}.{direction}", problems)
+    if relationship is None or issue is None:
+        return None
+    return {"relationship": relationship, "issue": issue}
+
+
+def normalize_issue_fields(raw_fields: dict[str, Any], *, path: str = "$.fields") -> dict[str, Any]:
     """Normalize a raw Jira `fields` object into its compact response form.
 
     Absent or null values are omitted rather than emitted as `null`. Known
@@ -254,22 +460,81 @@ def normalize_issue_fields(raw_fields: dict[str, Any]) -> dict[str, Any]:
     timestamps are still normalized recursively.
     """
     result: dict[str, Any] = {}
+    problems: list[NormalizationProblem] = []
     for key, value in raw_fields.items():
         if value is None:
             continue
 
         if key in _USER_FIELDS:
-            if isinstance(value, dict):
-                result[key] = compact_user(value)
+            user = _normalize_user(value, f"{path}.{key}", problems)
+            if user is not None:
+                result[key] = user
             continue
 
         if key in _DATE_FIELDS:
             if isinstance(value, str):
-                result[key] = to_utc_iso(value)
+                try:
+                    result[key] = to_utc_iso(value)
+                except ValueError:
+                    _add_problem(
+                        problems,
+                        f"{path}.{key}",
+                        "expected an ISO-8601 timestamp with an explicit offset",
+                    )
+            else:
+                _add_problem(problems, f"{path}.{key}", "expected a string")
             continue
 
         if key in _ADF_FIELDS:
             result[key] = adf_to_markdown(value) if isinstance(value, dict) else value
+            continue
+
+        resource_path = f"{path}.{key}"
+        if key == "issuetype":
+            normalized = _normalize_issuetype(value, resource_path, problems)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "status":
+            normalized = _normalize_status(value, resource_path, problems)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "priority":
+            normalized = _normalize_named_resource(value, resource_path, problems)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "project":
+            normalized = _normalize_named_resource(value, resource_path, problems, require_key=True)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "components":
+            normalized = _normalize_resource_list(
+                value, resource_path, problems, _normalize_named_resource
+            )
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "parent":
+            normalized = _normalize_issue_reference(value, resource_path, problems)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "subtasks":
+            normalized = _normalize_resource_list(
+                value, resource_path, problems, _normalize_issue_reference
+            )
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "issuelinks":
+            normalized = _normalize_resource_list(
+                value, resource_path, problems, _normalize_issue_link
+            )
+            if normalized is not None:
+                result[key] = normalized
             continue
 
         if key in KNOWN_FIELDS:
@@ -278,4 +543,6 @@ def normalize_issue_fields(raw_fields: dict[str, Any]) -> dict[str, Any]:
 
         result[key] = _normalize_unknown_value(value)
 
+    if problems:
+        raise IncompleteNormalizationError(result, problems)
     return result
