@@ -16,6 +16,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
     steps:
@@ -46,6 +50,9 @@ jobs:
           /tmp/verify-wheel/bin/pip install --quiet dist/*.whl
           /tmp/verify-wheel/bin/python scripts/verify_mcp_discovery.py /tmp/verify-wheel/bin/jira-mini-mcp
 
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,10 +62,14 @@ jobs:
 
           Six tools: search_issues, get_issue, get_comments, get_attachments, download_attachment, get_changelog. Configuration is exactly three environment variables: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN.
 
-          Install and run directly from this tag:
+          Install from PyPI:
+          uvx jira-mini-mcp
+          # or: pip install jira-mini-mcp
+
+          Or install and run directly from this tag:
           uvx --from git+https://github.com/proprock/jira-mini-mcp@${RELEASE_TAG} jira-mini-mcp
 
-          See README.md for setup and tool details. Not yet published to PyPI.
+          See README.md for setup and tool details.
           EOF
           gh release create "${RELEASE_TAG}" dist/*.whl dist/*.tar.gz \
             --title "${RELEASE_TAG}" \

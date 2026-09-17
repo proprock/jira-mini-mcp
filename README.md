@@ -49,9 +49,9 @@ Pin a release when you want a fixed surface:
 uvx --from git+https://github.com/proprock/jira-mini-mcp@v0.1.0 jira-mini-mcp
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). The package layout
-stays compatible with a later PyPI publication, after which `uvx jira-mini-mcp`
-will be enough.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Starting with the
+next tagged release, the release workflow also publishes to PyPI, after which
+`uvx jira-mini-mcp` will be enough.
 
 ## Configure
 
@@ -328,8 +328,9 @@ knows nothing about MCP; the tools are thin adapters over it.
 Semantic versioning, Conventional Commits, short-lived branches, pull-request CI,
 and tagged releases. [CHANGELOG.md](CHANGELOG.md) records what changed for
 someone running the server. `v0.1.0` is a GitHub Release with CI-checked wheel and source
-distributions attached. PyPI publication is a later step and should use GitHub
-Actions with Trusted Publishing rather than a long-lived credential.
+distributions attached. Starting with the next tag, the release workflow also
+publishes to PyPI using GitHub Actions Trusted Publishing (OIDC), with no
+long-lived credential to manage.
 
 ## License
 

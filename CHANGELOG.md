@@ -19,6 +19,9 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Rate-limited requests are retried automatically, honouring `Retry-After` while
   the wait is short and reporting the limit with its value when Jira asks for
   longer. Failed requests that may have been applied are never replayed.
+- The release workflow now publishes each tagged release to PyPI over GitHub
+  Actions trusted publishing (OIDC, no stored token), so `pip install
+  jira-mini-mcp` and `uvx jira-mini-mcp` work starting with the next release.
 
 ### Changed
 
