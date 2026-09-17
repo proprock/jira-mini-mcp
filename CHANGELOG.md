@@ -7,6 +7,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-18
+
+### Fixed
+
+- Shortened `server.json`'s description below the MCP Registry's
+  100-character limit; it had rejected the v0.9.1 registry publish while
+  PyPI publishing succeeded.
+
 ## [0.9.1] - 2026-09-18
 
 ### Added
@@ -65,7 +73,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.1.0...v0.9.0
 [0.1.0]: https://github.com/proprock/jira-mini-mcp/releases/tag/v0.1.0
