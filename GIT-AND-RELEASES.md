@@ -71,7 +71,10 @@ is an entry; "refactor the resolution helper" is not.
 
 **Releasing:** rename `[Unreleased]` to the new version with its date, add a
 fresh empty `[Unreleased]` above it, update the link definitions at the bottom,
-and bump `version` in `pyproject.toml` to match the tag. The Unreleased section
+and bump `version` in `pyproject.toml` to match the tag. Bump both `version`
+fields in `server.json` (top level and the `pypi` package entry) to match as
+well — the MCP Registry publish step in `release.yml` fails closed if the
+package version it points at was never published. The Unreleased section
 decides the version: a new tool or setting is a minor bump, a fix alone is a
 patch. Before `1.0`, a breaking change to a published tool contract is also a
 minor bump, and it says so in the entry rather than relying on the number.

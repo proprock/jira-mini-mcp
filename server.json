@@ -1,0 +1,50 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.proprock/jira-mini-mcp",
+  "title": "jira-mini-mcp",
+  "description": "Minimal Jira Cloud MCP server for coding agents: broad reads, a narrow three-tool write surface, and an optional read-only mode.",
+  "repository": {
+    "url": "https://github.com/proprock/jira-mini-mcp",
+    "source": "github"
+  },
+  "version": "0.9.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "jira-mini-mcp",
+      "version": "0.9.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "JIRA_BASE_URL",
+          "description": "Your Jira Cloud site, e.g. https://example.atlassian.net",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "JIRA_EMAIL",
+          "description": "The email your Jira API token belongs to",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "JIRA_API_TOKEN",
+          "description": "A Jira Cloud API token",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "READ_ONLY_MODE",
+          "description": "Set to true, 1, or on to register only the six read tools and withhold the three write tools",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

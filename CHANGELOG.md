@@ -7,6 +7,15 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-18
+
+### Added
+
+- The release workflow now also publishes each tagged release to the
+  [MCP Registry](https://registry.modelcontextprotocol.io) as
+  `io.github.proprock/jira-mini-mcp`, gated by the same GitHub Actions OIDC
+  trusted publishing used for PyPI.
+
 ## [0.9.0] - 2026-09-17
 
 ### Added
@@ -56,6 +65,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.1.0...v0.9.0
 [0.1.0]: https://github.com/proprock/jira-mini-mcp/releases/tag/v0.1.0
