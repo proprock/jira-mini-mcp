@@ -7,6 +7,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-17
+
 ### Added
 
 - Three write tools, the first in the project: `add_comment` posts one Markdown
@@ -54,5 +56,6 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.1.0...v0.9.0
 [0.1.0]: https://github.com/proprock/jira-mini-mcp/releases/tag/v0.1.0
