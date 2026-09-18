@@ -34,8 +34,9 @@ suitable for direct installation from GitHub.
   total.
 - The mandatory part of configuration consists of exactly `JIRA_BASE_URL`,
   `JIRA_EMAIL`, and `JIRA_API_TOKEN` for the MVP. Do not add another required
-  setup parameter casually. Optional parameters may be added only with the
-  user's explicit approval.
+  setup parameter casually. `READ_ONLY_MODE` and `DISABLE_STRUCTURED_OUTPUT`
+  are the two settings already approved as optional; any further optional
+  parameter still needs the user's explicit approval.
 - Never hardcode or log Jira URLs, credentials, authorization headers, OAuth
   secrets, cloud IDs, or attachment contents. Redact sensitive values in errors.
 - Make tool errors actionable: state the cause and, when known, how the caller

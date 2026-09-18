@@ -88,7 +88,7 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or `pip`).
 
 ## Configure
 
-Three required values, and one optional switch:
+Three required values, and two optional switches:
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -96,12 +96,14 @@ Three required values, and one optional switch:
 | `JIRA_EMAIL` | yes | The email your API token belongs to |
 | `JIRA_API_TOKEN` | yes | A [Jira Cloud API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
 | `READ_ONLY_MODE` | no | `true`, `1`, `on` registers only the six read tools |
+| `DISABLE_STRUCTURED_OUTPUT` | no | Comma-separated tool names that return `content` only, skipping `structuredContent` |
 
 Authentication is Jira Cloud Basic auth with the email and token. Jira
 Server/Data Center, PAT/Bearer, and OAuth are not supported. Configuration is
 validated at startup, and an error names the missing setting without printing its
 value or your Jira URL. An unrecognized `READ_ONLY_MODE` value stops startup
-rather than quietly re-enabling the write tools.
+rather than quietly re-enabling the write tools, and an unrecognized name in
+`DISABLE_STRUCTURED_OUTPUT` stops startup naming it and every valid tool name.
 
 Keep the token in the host's own configuration and never commit it. The token
 carries its account's permissions: an account that cannot transition an issue

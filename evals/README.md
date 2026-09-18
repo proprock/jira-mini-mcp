@@ -1,12 +1,15 @@
-# Tool-selection eval
+# Evals
+
+This directory is where claims about the server get tested instead of asserted.
+
+## Tool-selection eval
 
 `README.md` argues that a small, clearly differentiated toolset makes an agent's
-tool choice more reliable. This directory is where that claim gets tested instead
-of asserted.
+tool choice more reliable. This is where that claim gets tested.
 
 The claim splits in two, and so does the test.
 
-## The half that runs by default
+### The half that runs by default
 
 `tests/test_tool_schema_hygiene.py` runs in the normal suite and checks the input
 a model actually sees: every tool has a substantial description, no two
@@ -18,7 +21,7 @@ each surprising rule — `limit=0` means unbounded, `fields` replaces a default,
 Those are the properties a wrong tool choice usually traces back to, and they
 cost nothing to check.
 
-## The half that does not
+### The half that does not
 
 `run_eval.py` puts the real tool definitions in front of a real model and scores
 which tool it picks. That needs credentials and spends money, so it is not part
@@ -44,7 +47,7 @@ A full run is 16 requests. Expect roughly $0.20-0.50 on the default model; the
 run prints its actual token usage, which is the number to trust. Exit status is
 0 only when every scenario passes.
 
-## The scenarios
+### The scenarios
 
 `scenarios.json` holds them. Each prompt is phrased the way a developer would
 actually put it and never names a tool, so the model has to choose from the
@@ -66,7 +69,7 @@ A scenario grades the tool name, then any arguments it names: exact values under
 answers in prose instead of calling anything has made a selection error, and
 forcing a call would hide it.
 
-## Reading a failure
+### Reading a failure
 
 A failure is a signal about the tool descriptions at least as much as about the
 model. When one appears, read the description of the tool it *did* choose and ask
@@ -79,3 +82,45 @@ deterministic, so a single flipped result is noise, not a regression — rerun
 before acting on one. And these prompts are unambiguous by construction; real
 requests are not, so a perfect score means the descriptions are distinguishable,
 not that the toolset is right.
+
+## Structured-output savings eval
+
+`DISABLE_STRUCTURED_OUTPUT` (see `PROJECT-CONTRACTS.md`'s Configuration
+section) lets an operator stop a tool from duplicating its JSON as both
+`content` and `structuredContent`. Extra 1 in `PLAN.agents.md` deliberately
+did not claim that duplication costs anything — this eval is the
+measurement, not an assumption. It never claims the savings *matter* to any
+given host; it only reports how large they are.
+
+```bash
+uv run python evals/structured_output_savings.py
+uv run python evals/structured_output_savings.py --requests 500
+uv run python evals/structured_output_savings.py --json
+```
+
+It needs no credentials at all — unlike `run_eval.py`, it never calls a model
+or Jira. A synthetic in-memory `JiraClient` stand-in (the same duck-typing
+`tests/test_server.py` uses) feeds the real server's response-shaping code, so
+what gets measured is the exact `CallToolResult` jira-mini-mcp sends, not a
+guess about it.
+
+A fixed mix of the nine tools, weighted like a realistic agent session
+(`get_issue` and `search_issues` most common, `download_attachment` least),
+is replayed `--requests` times (100 by default) with structured output on and
+off, and the table reports each tool's byte savings and the overall total:
+
+```text
+  tool                  reqs    ON bytes   OFF bytes    saved
+  -----------------------------------------------------------
+  get_issue               30       79140       47490    40.0%
+  search_issues           20      217220      142760    34.3%
+  ...
+  -----------------------------------------------------------
+  TOTAL                  100      386286      247976    35.8%
+```
+
+The byte counts are each request's `CallToolResult` alone; the constant
+JSON-RPC envelope (`jsonrpc`/`id`/`result`) is not included on either side,
+since the setting does not change it. Synthetic ticket/comment/changelog
+data is sized like a real one, not maximal — treat the percentages as
+representative of a typical mix, not a worst case.
