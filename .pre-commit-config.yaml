@@ -38,3 +38,10 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      # Runs only when a file that records the release version changes.
+      - id: version-sync
+        name: version files agree
+        entry: uv run python scripts/check_version_sync.py
+        language: system
+        files: ^(pyproject\.toml|server\.json|uv\.lock|CHANGELOG\.md)$
+        pass_filenames: false

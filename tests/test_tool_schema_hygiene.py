@@ -18,7 +18,7 @@ from mcp import Client
 
 from jira_mini_mcp.server import create_server
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.hygiene]
 
 # A parameter whose name fully explains it. Everything else must be named in
 # its tool's description: an agent reads prose, and the schema alone does not

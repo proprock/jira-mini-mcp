@@ -15,7 +15,7 @@ import pytest
 
 from jira_mini_mcp.jira import ISSUE_DEFAULT_FIELDS, SEARCH_DEFAULT_FIELDS
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.hygiene]
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CONTRACTS = (ROOT / "PROJECT-CONTRACTS.md").read_text(encoding="utf-8")

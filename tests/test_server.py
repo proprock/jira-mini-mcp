@@ -943,6 +943,7 @@ class TestLifespan:
         assert not cache_dirs[0].exists()
 
 
+@pytest.mark.slow
 class TestStdioSubprocessSmoke:
     async def test_tools_are_discoverable_over_stdio(self) -> None:
         params = StdioServerParameters(

@@ -8,11 +8,19 @@ uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 uv run pytest
-uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+uv run pytest -o addopts="" --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
 ```
 
+`uv run pytest` is the fast behavioral suite. Tests marked `hygiene`
+(documentation and tool-description contract checks) or `slow` (stdio
+subprocess) are excluded from it by `addopts`; `-o addopts=""` runs everything,
+which is what the coverage command and CI do.
+
 `uv run prek run --all-files` runs the fast subset (file hygiene, format check,
-lint, type check) through the commit hooks; it does not replace `pytest`.
+lint, type check, version-file agreement) through the commit hooks; it does not
+replace `pytest`. The `version-sync` hook runs `scripts/check_version_sync.py`
+only when `pyproject.toml`, `server.json`, `uv.lock`, or `CHANGELOG.md` changes;
+CI runs it on every push.
 
 Use `uv run ruff format .` to format; do not manually fight the formatter. Run
 all checks relevant to modified code and do not claim a check passed unless it

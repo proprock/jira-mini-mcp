@@ -43,6 +43,14 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The default run is the fast behavioral suite. `hygiene` (docs/tool-schema
+# contract checks) and `slow` (stdio subprocess) run in CI and on demand:
+# `pytest -o addopts=""` runs everything.
+addopts = "-m 'not hygiene and not slow'"
+markers = [
+    "hygiene: documentation and tool-description contract checks",
+    "slow: spawns a subprocess",
+]
 
 [tool.coverage.run]
 branch = true
