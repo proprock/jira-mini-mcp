@@ -1,30 +1,58 @@
+<div align="center">
+
 # jira-mini-mcp
 
-A nine-tool Jira Cloud MCP server for coding agents.
+A Jira Cloud MCP server for coding agents: 6 read tools, 9 with writes enabled.
 
 [![CI](https://github.com/proprock/jira-mini-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/proprock/jira-mini-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/proprock/jira-mini-mcp)](https://github.com/proprock/jira-mini-mcp/releases)
+[![PyPI Version](https://img.shields.io/pypi/v/jira-mini-mcp)](https://pypi.org/project/jira-mini-mcp/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[![Model Context Protocol compatible](https://img.shields.io/badge/Model_Context_Protocol-compatible-000000?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
+[![MCP Registry: io.github.proprock/jira-mini-mcp](https://img.shields.io/badge/MCP_Registry-io.github.proprock%2Fjira--mini--mcp-000000?logo=modelcontextprotocol&logoColor=white)](server.json)
+[![Auth: API token](https://img.shields.io/badge/Auth-API_token-2EBC4F)](#configure)
+
+<img src="https://raw.githubusercontent.com/proprock/jira-mini-mcp/master/images/swiss-army-knife.jpg" alt="One job. One tool. Done right." width="760">
+
+<i>One job. One tool. Done right.</i>
+
+</div>
+
+<!-- mcp-name: io.github.proprock/jira-mini-mcp -->
 
 General-purpose Atlassian MCP servers expose dozens to hundreds of tools. Every
 one costs context before the agent does any useful work, and every near-duplicate
 makes the agent's choice less certain. This server gives a coding agent the Jira
 context it needs for a ticket, the three ways to answer back, and nothing else.
 
-| Tool | Purpose |
-|---|---|
-| `search_issues` | Find issues with JQL |
-| `get_issue` | One issue's core state and fields |
-| `get_comments` | Recent or historical discussion, paginated |
-| `get_attachments` | Attachment metadata |
-| `download_attachment` | Fetch one attachment |
-| `get_changelog` | Field-change history, paginated |
-| `add_comment` | Post one Markdown comment |
-| `transition_issue` | Move an issue through its workflow |
-| `update_issue` | Set issue fields |
+- **6-9 tools, not 98** - every one earns its place in context; see
+  [why so few](#why-so-few-tools) and how it's [compared with the
+  alternatives](#compared-with-the-alternatives).
+- **Read-only mode built in** - set one variable and the three write tools
+  never register, not even as a disabled entry the agent can see.
+- **Compact, predictable output** - stable JSON schemas, Markdown for rich
+  text, no `null` spam, no second human-readable rendering of the same
+  result; see [what the tools return](#what-the-tools-return).
+- **On PyPI** - `uvx jira-mini-mcp` or `pip install jira-mini-mcp`, no repo
+  clone or git URL required.
 
-Six read, three write. `READ_ONLY_MODE=true` registers the six alone.
+| Tool | Access | Purpose |
+|---|---|---|
+| `search_issues` | 🟢 read | Find issues with JQL |
+| `get_issue` | 🟢 read | One issue's core state and fields |
+| `get_comments` | 🟢 read | Recent or historical discussion, paginated |
+| `get_attachments` | 🟢 read | Attachment metadata |
+| `download_attachment` | 🟢 read | Fetch one attachment |
+| `get_changelog` | 🟢 read | Field-change history, paginated |
+| `add_comment` | 🔴 write | Post one Markdown comment |
+| `transition_issue` | 🔴 write | Move an issue through its workflow |
+| `update_issue` | 🔴 write | Set issue fields |
+
+> [!TIP]
+> Set `READ_ONLY_MODE=true` and only the six 🟢 read tools register - the
+> three 🔴 write tools are withheld entirely, see [Configure](#configure).
 
 - [Install](#install)
 - [Configure](#configure)
@@ -37,21 +65,25 @@ Six read, three write. `READ_ONLY_MODE=true` registers the six alone.
 
 ## Install
 
-No installation step: run it straight from GitHub.
+```bash
+uvx jira-mini-mcp
+```
+
+or
+
+```bash
+pip install jira-mini-mcp
+```
+
+Pin a version when you want a fixed surface: `uvx jira-mini-mcp==0.9.0`.
+
+Running an unreleased commit straight from GitHub also works:
 
 ```bash
 uvx --from git+https://github.com/proprock/jira-mini-mcp jira-mini-mcp
 ```
 
-Pin a release when you want a fixed surface:
-
-```bash
-uvx --from git+https://github.com/proprock/jira-mini-mcp@v0.1.0 jira-mini-mcp
-```
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Starting with the
-next tagged release, the release workflow also publishes to PyPI, after which
-`uvx jira-mini-mcp` will be enough.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or `pip`).
 
 ## Configure
 
@@ -78,11 +110,11 @@ still cannot, whatever this server exposes.
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add --env JIRA_BASE_URL=https://example.atlassian.net --env JIRA_EMAIL=you@example.com --env JIRA_API_TOKEN=your-token --transport stdio jira-mini -- uvx --from git+https://github.com/proprock/jira-mini-mcp jira-mini-mcp
+claude mcp add --env JIRA_BASE_URL=https://example.atlassian.net --env JIRA_EMAIL=you@example.com --env JIRA_API_TOKEN=your-token --transport stdio jira-mini -- uvx jira-mini-mcp
 ```
 
 Put at least one other option between the last `--env` and the server name, as
-above — the CLI otherwise reads the name as another `KEY=value` pair.
+above - the CLI otherwise reads the name as another `KEY=value` pair.
 
 </details>
 
@@ -96,11 +128,7 @@ In `claude_desktop_config.json`:
   "mcpServers": {
     "jira-mini": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/proprock/jira-mini-mcp",
-        "jira-mini-mcp"
-      ],
+      "args": ["jira-mini-mcp"],
       "env": {
         "JIRA_BASE_URL": "https://example.atlassian.net",
         "JIRA_EMAIL": "you@example.com",
@@ -117,7 +145,7 @@ In `claude_desktop_config.json`:
 <summary><b>Codex CLI</b></summary>
 
 ```bash
-codex mcp add jira-mini --env JIRA_BASE_URL=https://example.atlassian.net --env JIRA_EMAIL=you@example.com --env JIRA_API_TOKEN=your-token -- uvx --from git+https://github.com/proprock/jira-mini-mcp jira-mini-mcp
+codex mcp add jira-mini --env JIRA_BASE_URL=https://example.atlassian.net --env JIRA_EMAIL=you@example.com --env JIRA_API_TOKEN=your-token -- uvx jira-mini-mcp
 ```
 
 </details>
@@ -125,8 +153,8 @@ codex mcp add jira-mini --env JIRA_BASE_URL=https://example.atlassian.net --env 
 <details>
 <summary><b>Any other stdio host</b></summary>
 
-Command `uvx`, arguments `--from`, the GitHub URL, `jira-mini-mcp`, and the three
-environment variables. Add `READ_ONLY_MODE=true` to withhold the write tools.
+Command `uvx`, argument `jira-mini-mcp`, and the three environment variables.
+Add `READ_ONLY_MODE=true` to withhold the write tools.
 
 </details>
 
@@ -135,7 +163,7 @@ environment variables. Add `READ_ONLY_MODE=true` to withhold the write tools.
 Structured JSON with stable output schemas, and no second human-readable
 rendering of the same result. Jira's rich text becomes Markdown inside the
 corresponding string field. Timestamps normalize to UTC ISO-8601 with a `Z`.
-Users are `account_id` and `display_name` only — no email, avatar, or `self` URL.
+Users are `account_id` and `display_name` only - no email, avatar, or `self` URL.
 Known resources use compact shapes:
 
 ```text
@@ -176,7 +204,7 @@ hidden fields. `fields=[]` returns issue keys only.
 ### Pagination
 
 Large collections never pretend to be complete. `get_comments` and
-`get_changelog` return `start_at`, an exact `total`, and `items` — more exist
+`get_changelog` return `start_at`, an exact `total`, and `items` - more exist
 when `start_at + len(items) < total`, and that sum is the next offset. Both
 default to `order="desc"` (offset zero is the newest item) and to 20 items;
 `limit=0` returns everything remaining from `start_at`, with no 100-item cap.
@@ -188,7 +216,7 @@ discussion.
 [Jira Cloud enhanced search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
 is cursor-based with no exact total; its count endpoint is approximate and the
 old offset endpoint is being removed. So search returns `items` and
-`next_page_token` only — pass the token back as `page_token`, and a null token
+`next_page_token` only - pass the token back as `page_token`, and a null token
 means the last page. `limit` is 1..100; zero is rejected with guidance rather
 than silently treated as a default.
 
@@ -216,9 +244,9 @@ feature in its own right; a link, or a request for one, fits in a comment.
 Three things are worth knowing before an agent writes:
 
 - **`transition_issue` takes a name, not an id.** A transition name or the name
-  of the status to reach, matched ignoring case. They differ in real workflows —
+  of the status to reach, matched ignoring case. They differ in real workflows -
   a transition called `In Progress` can produce a status called `In Development`,
-  and two differently named transitions can reach one status — so prefer the
+  and two differently named transitions can reach one status - so prefer the
   transition name. When nothing matches, the error lists every available
   transition and where it leads. That listing is the discovery mechanism, which
   is why there is no separate `get_transitions` tool.
@@ -242,7 +270,7 @@ any work happens. A large toolset therefore spends context on capabilities the
 current task will never use, and raises the chance of picking the wrong tool,
 confusing similar ones, or passing bad parameters.
 
-Nine compact schemas stay affordable for a whole session, leaving the context
+Six to nine compact schemas stay affordable for a whole session, leaving the context
 budget for source code, issue descriptions, stack traces, and reasoning. The
 design follows Anthropic's guidance for agent systems: keep toolsets small,
 role-scoped, and clearly differentiated.
@@ -251,7 +279,7 @@ This is a claim, so the repository tests it. The offline half runs with the suit
 and checks that every tool is described substantially, that no two descriptions
 are near-duplicates, and that every parameter whose behavior cannot be guessed
 from its name is explained in prose. The other half puts the real tool
-definitions in front of a real model and scores which one it picks — see
+definitions in front of a real model and scores which one it picks - see
 [`evals/README.md`](evals/README.md).
 
 The same principle shapes the responses. `get_issue` does not dump hundreds of
@@ -266,7 +294,7 @@ resources are fetched only when asked for.
 | Deployments | Cloud | Cloud | Cloud, Server/Data Center |
 | Hosting | Local, stdio | Remote, Atlassian-hosted | Local (stdio, Docker) or HTTP |
 | Auth | API token | OAuth 2.1 or API token | API token, PAT, or OAuth 2.0 |
-| Tools | 9, always visible | A small default set with on-demand discovery | 98 |
+| Tools | 6-9, always visible | A small default set with on-demand discovery | 98 |
 | Writes | 3 tools | Yes, admin-gated by category | Yes |
 | License | MIT | Apache 2.0 | MIT |
 
@@ -277,7 +305,7 @@ audit logs. It is Atlassian's own product, it tracks their APIs, and nothing her
 competes with that.
 
 **`mcp-atlassian` is the better choice** when you need Confluence alongside Jira,
-Server/Data Center, or simply broader Jira coverage than nine tools.
+Server/Data Center, or simply broader Jira coverage than six to nine tools.
 
 **This server is the better choice** for one narrow case: a coding agent working
 a Jira ticket, where the context every tool definition costs is worth more than
@@ -319,7 +347,7 @@ agent -> stdio -> MCPServer -> JiraClient -> httpx2.AsyncClient -> Jira REST v3
 ```
 
 One asynchronous HTTP client is reused for the process lifetime, with an explicit
-timeout and bounded retries — a 429 is retried for any method, a 5xx or a dropped
+timeout and bounded retries - a 429 is retried for any method, a 5xx or a dropped
 connection only for methods that converge on replay, never a POST. `JiraClient`
 knows nothing about MCP; the tools are thin adapters over it.
 
@@ -327,10 +355,10 @@ knows nothing about MCP; the tools are thin adapters over it.
 
 Semantic versioning, Conventional Commits, short-lived branches, pull-request CI,
 and tagged releases. [CHANGELOG.md](CHANGELOG.md) records what changed for
-someone running the server. `v0.1.0` is a GitHub Release with CI-checked wheel and source
-distributions attached. Starting with the next tag, the release workflow also
-publishes to PyPI using GitHub Actions Trusted Publishing (OIDC), with no
-long-lived credential to manage.
+someone running the server. Each tag is a GitHub Release with CI-checked wheel
+and source distributions attached, and is published to
+[PyPI](https://pypi.org/project/jira-mini-mcp/) over GitHub Actions Trusted
+Publishing (OIDC) - no long-lived credential to manage.
 
 ## License
 

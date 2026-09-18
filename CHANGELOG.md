@@ -7,6 +7,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-18
+
+### Fixed
+
+- Published README.md with the `mcp-name: io.github.proprock/jira-mini-mcp`
+  marker the MCP Registry requires to verify PyPI package ownership; v0.9.2's
+  registry publish failed because the marker was never in the released README.
+
 ## [0.9.2] - 2026-09-18
 
 ### Fixed
@@ -73,7 +81,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.1.0...v0.9.0
