@@ -11,6 +11,9 @@ uv run pytest
 uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
 ```
 
+`uv run prek run --all-files` runs the fast subset (file hygiene, format check,
+lint, type check) through the commit hooks; it does not replace `pytest`.
+
 Use `uv run ruff format .` to format; do not manually fight the formatter. Run
 all checks relevant to modified code and do not claim a check passed unless it
 was executed.

@@ -9,13 +9,16 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync format format-check lint typecheck test coverage check all clean
+.PHONY: help sync hooks format format-check lint typecheck test coverage check all clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "%-14s %s\n", $$1, $$2}'
 
 sync: ## Install/sync dependencies
 	uv sync
+
+hooks: ## Install the prek git hooks
+	uv run prek install
 
 format: ## Apply ruff formatting
 	uv run ruff format .

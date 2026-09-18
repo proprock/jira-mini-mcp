@@ -24,6 +24,7 @@ dev = [
     # it the same way for everyone; the runtime dependencies, and therefore
     # the published wheel, are unaffected.
     "anthropic",
+    "prek>=0.5.3",
 ]
 
 [build-system]
