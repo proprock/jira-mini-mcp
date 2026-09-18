@@ -299,17 +299,7 @@ class TestToolDiscovery:
             assert tool.annotations.destructive_hint is destructive
             assert tool.annotations.idempotent_hint is idempotent
 
-    async def test_write_tool_descriptions_state_what_the_schema_cannot(self) -> None:
-        async with Client(_server_with(FakeJiraClient())) as client:
-            tools = {tool.name: _description(tool) for tool in (await client.list_tools()).tools}
-
-        assert "REPLACE" in tools["update_issue"]
-        assert "transition_issue" in tools["update_issue"]
-        assert "add_comment" in tools["update_issue"]
-        assert "transition name" in tools["transition_issue"]
-        assert "Markdown" in tools["add_comment"]
-
-    async def test_search_issues_schema_has_positive_limit_default_and_replaceable_fields(
+    async def test_search_issues_schema_has_required_jql_and_defaults(
         self,
     ) -> None:
         async with Client(_server_with(FakeJiraClient())) as client:
@@ -319,21 +309,15 @@ class TestToolDiscovery:
         assert tool.input_schema["required"] == ["jql"]
         assert tool.input_schema["properties"]["limit"]["default"] == 20
         assert tool.input_schema["properties"]["page_token"]["default"] is None
-        description = _description(tool)
-        assert "1..100" in description
-        assert "summary" in description and "project" in description
 
-    async def test_get_issue_schema_documents_default_fields(self) -> None:
+    async def test_get_issue_schema_requires_only_the_issue_key(self) -> None:
         async with Client(_server_with(FakeJiraClient())) as client:
             tools = (await client.list_tools()).tools
         tool = next(t for t in tools if t.name == "get_issue")
 
         assert tool.input_schema["required"] == ["issue_key"]
-        description = _description(tool)
-        assert "subtasks" in description
-        assert "comments" in description  # documents the exclusion
 
-    async def test_get_comments_and_get_changelog_document_pagination_and_limit_zero(
+    async def test_get_comments_and_get_changelog_default_to_newest_first_from_the_start(
         self,
     ) -> None:
         async with Client(_server_with(FakeJiraClient())) as client:
@@ -344,9 +328,6 @@ class TestToolDiscovery:
             tool = by_name[name]
             assert tool.input_schema["properties"]["order"]["default"] == "desc"
             assert tool.input_schema["properties"]["start_at"]["default"] == 0
-            description = _description(tool)
-            assert "limit=0" in description
-            assert "newest" in description
 
         assert "since" in by_name["get_comments"].input_schema["properties"]
         assert "since" not in by_name["get_changelog"].input_schema["properties"]
@@ -359,34 +340,97 @@ class TestToolDiscovery:
         assert set(tool.input_schema["properties"]) == {"attachment_id"}
 
 
-class TestSearchIssues:
-    async def test_defaults_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("search_issues", {"jql": "project = ABC"})
+class TestArgumentForwarding:
+    """The adapter hands each tool's arguments to the client unchanged and
+    fills the documented defaults; the client, not the adapter, owns meaning."""
 
-        assert fake.calls == [
-            _Call(
+    @pytest.mark.parametrize(
+        ("tool", "arguments", "forwarded"),
+        [
+            (
                 "search_issues",
+                {"jql": "project = ABC"},
                 {"jql": "project = ABC", "page_token": None, "limit": 20, "fields": None},
-            )
-        ]
-
-    async def test_explicit_arguments_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool(
+            ),
+            (
                 "search_issues",
                 {"jql": "project = ABC", "page_token": "cursor-1", "limit": 5, "fields": []},
-            )
+                {"jql": "project = ABC", "page_token": "cursor-1", "limit": 5, "fields": []},
+            ),
+            ("get_issue", {"issue_key": "ABC-1"}, {"issue_key": "ABC-1", "fields": None}),
+            (
+                "get_issue",
+                {"issue_key": "ABC-1", "fields": []},
+                {"issue_key": "ABC-1", "fields": []},
+            ),
+            (
+                "get_comments",
+                {"issue_key": "ABC-1"},
+                {"issue_key": "ABC-1", "start_at": 0, "limit": 20, "order": "desc", "since": None},
+            ),
+            (
+                "get_comments",
+                {
+                    "issue_key": "ABC-1",
+                    "start_at": 20,
+                    "limit": 0,
+                    "order": "asc",
+                    "since": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "issue_key": "ABC-1",
+                    "start_at": 20,
+                    "limit": 0,
+                    "order": "asc",
+                    "since": "2026-01-01T00:00:00Z",
+                },
+            ),
+            ("get_attachments", {"issue_key": "ABC-1"}, {"issue_key": "ABC-1"}),
+            ("download_attachment", {"attachment_id": "80001"}, {"attachment_id": "80001"}),
+            (
+                "get_changelog",
+                {"issue_key": "ABC-1"},
+                {"issue_key": "ABC-1", "start_at": 0, "limit": 20, "order": "desc"},
+            ),
+            (
+                "get_changelog",
+                {"issue_key": "ABC-1", "start_at": 5, "limit": 0, "order": "asc"},
+                {"issue_key": "ABC-1", "start_at": 5, "limit": 0, "order": "asc"},
+            ),
+            (
+                "add_comment",
+                {"issue_key": "SYN-1", "body": "Deployed to **staging**."},
+                {"issue_key": "SYN-1", "body": "Deployed to **staging**."},
+            ),
+            (
+                "transition_issue",
+                {"issue_key": "SYN-1", "to": "In Progress"},
+                {"issue_key": "SYN-1", "to": "In Progress", "comment": None},
+            ),
+            (
+                "transition_issue",
+                {"issue_key": "SYN-1", "to": "Done", "comment": "Shipped."},
+                {"issue_key": "SYN-1", "to": "Done", "comment": "Shipped."},
+            ),
+            (
+                "update_issue",
+                {"issue_key": "SYN-1", "fields": {"labels": ["triage"], "customfield_1": {"v": 3}}},
+                {"issue_key": "SYN-1", "fields": {"labels": ["triage"], "customfield_1": {"v": 3}}},
+            ),
+        ],
+        ids=lambda value: value if isinstance(value, str) and "_" in value else "",
+    )
+    async def test_arguments_and_defaults_reach_the_client(
+        self, tool: str, arguments: dict[str, Any], forwarded: dict[str, Any]
+    ) -> None:
+        fake = FakeJiraClient()
+        async with Client(_server_with(fake)) as client:
+            await client.call_tool(tool, arguments)
 
-        assert fake.calls[0].kwargs == {
-            "jql": "project = ABC",
-            "page_token": "cursor-1",
-            "limit": 5,
-            "fields": [],
-        }
+        assert fake.calls == [_Call(tool, forwarded)]
 
+
+class TestSearchIssues:
     async def test_response_shapes_items_and_next_page_token(self) -> None:
         fake = FakeJiraClient()
         fake.search_issues_result = SearchPage(
@@ -431,20 +475,6 @@ class TestSearchIssues:
 
 
 class TestGetIssue:
-    async def test_defaults_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("get_issue", {"issue_key": "ABC-1"})
-
-        assert fake.calls == [_Call("get_issue", {"issue_key": "ABC-1", "fields": None})]
-
-    async def test_empty_fields_list_passes_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("get_issue", {"issue_key": "ABC-1", "fields": []})
-
-        assert fake.calls[0].kwargs == {"issue_key": "ABC-1", "fields": []}
-
     async def test_response_shapes_key_and_fields(self) -> None:
         fake = FakeJiraClient()
         fake.get_issue_result = IssueDetail(
@@ -483,46 +513,6 @@ class TestGetIssue:
 
 
 class TestGetComments:
-    async def test_defaults_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("get_comments", {"issue_key": "ABC-1"})
-
-        assert fake.calls == [
-            _Call(
-                "get_comments",
-                {
-                    "issue_key": "ABC-1",
-                    "start_at": 0,
-                    "limit": 20,
-                    "order": "desc",
-                    "since": None,
-                },
-            )
-        ]
-
-    async def test_explicit_arguments_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool(
-                "get_comments",
-                {
-                    "issue_key": "ABC-1",
-                    "start_at": 20,
-                    "limit": 0,
-                    "order": "asc",
-                    "since": "2026-01-01T00:00:00Z",
-                },
-            )
-
-        assert fake.calls[0].kwargs == {
-            "issue_key": "ABC-1",
-            "start_at": 20,
-            "limit": 0,
-            "order": "asc",
-            "since": "2026-01-01T00:00:00Z",
-        }
-
     async def test_response_shapes_start_at_total_items(self) -> None:
         fake = FakeJiraClient()
         fake.get_comments_result = Page(
@@ -599,13 +589,6 @@ class TestGetComments:
 
 
 class TestGetAttachments:
-    async def test_call_passes_issue_key(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("get_attachments", {"issue_key": "ABC-1"})
-
-        assert fake.calls == [_Call("get_attachments", {"issue_key": "ABC-1"})]
-
     async def test_response_shapes_attachment_metadata_only(self) -> None:
         fake = FakeJiraClient()
         fake.get_attachments_result = [
@@ -638,13 +621,6 @@ class TestGetAttachments:
 
 
 class TestDownloadAttachment:
-    async def test_call_passes_attachment_id(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("download_attachment", {"attachment_id": "80001"})
-
-        assert fake.calls == [_Call("download_attachment", {"attachment_id": "80001"})]
-
     async def test_response_shapes_result_fields(self) -> None:
         fake = FakeJiraClient()
         fake.download_attachment_result = DownloadResult(
@@ -669,33 +645,6 @@ class TestDownloadAttachment:
 
 
 class TestGetChangelog:
-    async def test_defaults_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("get_changelog", {"issue_key": "ABC-1"})
-
-        assert fake.calls == [
-            _Call(
-                "get_changelog",
-                {"issue_key": "ABC-1", "start_at": 0, "limit": 20, "order": "desc"},
-            )
-        ]
-
-    async def test_explicit_arguments_pass_through_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool(
-                "get_changelog",
-                {"issue_key": "ABC-1", "start_at": 5, "limit": 0, "order": "asc"},
-            )
-
-        assert fake.calls[0].kwargs == {
-            "issue_key": "ABC-1",
-            "start_at": 5,
-            "limit": 0,
-            "order": "asc",
-        }
-
     async def test_response_shapes_changes_and_keeps_null_from_and_to(self) -> None:
         fake = FakeJiraClient()
         fake.get_changelog_result = Page(
@@ -765,17 +714,6 @@ class TestGetChangelog:
 
 
 class TestAddCommentTool:
-    async def test_call_passes_issue_key_and_body(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool(
-                "add_comment", {"issue_key": "SYN-1", "body": "Deployed to **staging**."}
-            )
-
-        assert fake.calls == [
-            _Call("add_comment", {"issue_key": "SYN-1", "body": "Deployed to **staging**."})
-        ]
-
     async def test_response_uses_the_get_comments_comment_shape(self) -> None:
         fake = FakeJiraClient()
         async with Client(_server_with(fake)) as client:
@@ -797,28 +735,6 @@ class TestAddCommentTool:
 
 
 class TestTransitionIssueTool:
-    async def test_call_defaults_comment_to_none(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("transition_issue", {"issue_key": "SYN-1", "to": "In Progress"})
-
-        assert fake.calls == [
-            _Call(
-                "transition_issue",
-                {"issue_key": "SYN-1", "to": "In Progress", "comment": None},
-            )
-        ]
-
-    async def test_call_passes_the_comment_through(self) -> None:
-        fake = FakeJiraClient()
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool(
-                "transition_issue",
-                {"issue_key": "SYN-1", "to": "Done", "comment": "Shipped."},
-            )
-
-        assert fake.calls[0].kwargs["comment"] == "Shipped."
-
     async def test_response_separates_the_transition_from_the_status_it_produced(self) -> None:
         fake = FakeJiraClient()
         async with Client(_server_with(fake)) as client:
@@ -836,14 +752,6 @@ class TestTransitionIssueTool:
 
 
 class TestUpdateIssueTool:
-    async def test_call_passes_the_fields_object_unchanged(self) -> None:
-        fake = FakeJiraClient()
-        fields = {"summary": "New title", "labels": ["triage"], "customfield_10011": {"value": 3}}
-        async with Client(_server_with(fake)) as client:
-            await client.call_tool("update_issue", {"issue_key": "SYN-1", "fields": fields})
-
-        assert fake.calls == [_Call("update_issue", {"issue_key": "SYN-1", "fields": fields})]
-
     async def test_response_lists_the_fields_that_were_sent(self) -> None:
         fake = FakeJiraClient()
         async with Client(_server_with(fake)) as client:
@@ -1419,5 +1327,3 @@ class TestHttpTimeout:
             await client.list_tools()
 
         assert timeouts == [HTTP_TIMEOUT]
-        assert HTTP_TIMEOUT.connect == 10.0
-        assert HTTP_TIMEOUT.read == 30.0

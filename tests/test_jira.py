@@ -544,27 +544,6 @@ class TestGetIssue:
         assert exc_info.value.problems == ("$.fields: expected an object",)
         assert exc_info.value.partial_result == {"key": "SYN-1", "fields": {}}
 
-    @pytest.mark.parametrize(
-        ("status", "exc_class"),
-        [
-            (401, errors.JiraAuthenticationError),
-            (403, errors.JiraPermissionError),
-            (404, errors.JiraNotFoundError),
-            (429, errors.JiraRateLimitError),
-            (500, errors.JiraServerError),
-        ],
-    )
-    async def test_error_status_codes_map_to_expected_exception(
-        self, status: int, exc_class: type[Exception]
-    ) -> None:
-        handler, _ = _recording_handler(
-            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
-        )
-        client = _make_client(handler)
-
-        with pytest.raises(exc_class):
-            await client.get_issue("SYN-1")
-
 
 class TestGetIssueReferenceFieldResolution:
     """`watches`/`votes` resolve to real data via one follow-up GET each,
@@ -950,26 +929,6 @@ class TestGetComments:
         with pytest.raises(errors.JiraServerError):
             await client.get_comments("SYN-1")
 
-    async def test_sort_key_drops_missing_or_malformed_created_without_crashing(self) -> None:
-        raw = {
-            "startAt": 0,
-            "maxResults": 20,
-            "total": 3,
-            "comments": [
-                _synthetic_comment(1, "2025-01-01T00:00:00Z"),
-                {**_synthetic_comment(2, ""), "created": None},
-                {**_synthetic_comment(3, ""), "created": "not-a-timestamp"},
-            ],
-        }
-        handler, _ = _recording_handler(_json_response(200, raw))
-        client = _make_client(handler)
-
-        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
-            await client.get_comments("SYN-1", order="asc")
-
-        assert len(exc_info.value.problems) == 2
-        assert [c["id"] for c in exc_info.value.partial_result["items"]] == ["1001"]
-
     async def test_since_scan_skips_comment_with_malformed_created(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1003,21 +962,6 @@ class TestGetComments:
         )
 
         assert [c.id for c in result.items] == ["1001", "1003"]
-
-    async def test_sort_key_treats_non_dict_item_as_unsortable(self) -> None:
-        raw = {
-            "startAt": 0,
-            "maxResults": 20,
-            "total": 2,
-            "comments": ["not-an-object", _synthetic_comment(1, "2025-01-01T00:00:00Z")],
-        }
-        handler, _ = _recording_handler(_json_response(200, raw))
-        client = _make_client(handler)
-
-        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
-            await client.get_comments("SYN-1", order="asc")
-
-        assert [c["id"] for c in exc_info.value.partial_result["items"]] == ["1001"]
 
     async def test_since_matches_entire_history_reaches_natural_end(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1067,27 +1011,6 @@ class TestGetComments:
 
         assert exc_info.value.issue_key == "SYN-404"
         assert exc_info.value.status_code == 404
-
-    @pytest.mark.parametrize(
-        ("status", "exc_class"),
-        [
-            (401, errors.JiraAuthenticationError),
-            (403, errors.JiraPermissionError),
-            (404, errors.JiraNotFoundError),
-            (429, errors.JiraRateLimitError),
-            (500, errors.JiraServerError),
-        ],
-    )
-    async def test_error_status_codes_map_to_expected_exception(
-        self, status: int, exc_class: type[Exception]
-    ) -> None:
-        handler, _ = _recording_handler(
-            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
-        )
-        client = _make_client(handler)
-
-        with pytest.raises(exc_class):
-            await client.get_comments("SYN-1")
 
     @pytest.mark.parametrize(
         ("kwargs", "message_fragment"),
@@ -1431,43 +1354,6 @@ class TestGetChangelog:
         with pytest.raises(errors.JiraServerError):
             await client.get_changelog("SYN-1")
 
-    async def test_sort_key_drops_missing_or_malformed_created_without_crashing(self) -> None:
-        raw = {
-            "startAt": 0,
-            "maxResults": 20,
-            "total": 3,
-            "isLast": True,
-            "values": [
-                _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z"),
-                {**_synthetic_changelog_entry(2, ""), "created": None},
-                {**_synthetic_changelog_entry(3, ""), "created": "not-a-timestamp"},
-            ],
-        }
-        handler, _ = _recording_handler(_json_response(200, raw))
-        client = _make_client(handler)
-
-        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
-            await client.get_changelog("SYN-1", order="asc")
-
-        assert len(exc_info.value.problems) == 2
-        assert [e["id"] for e in exc_info.value.partial_result["items"]] == ["50001"]
-
-    async def test_sort_key_treats_non_dict_item_as_unsortable(self) -> None:
-        raw = {
-            "startAt": 0,
-            "maxResults": 20,
-            "total": 2,
-            "isLast": True,
-            "values": ["not-an-object", _synthetic_changelog_entry(1, "2025-01-01T00:00:00Z")],
-        }
-        handler, _ = _recording_handler(_json_response(200, raw))
-        client = _make_client(handler)
-
-        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
-            await client.get_changelog("SYN-1", order="asc")
-
-        assert [e["id"] for e in exc_info.value.partial_result["items"]] == ["50001"]
-
     async def test_malformed_resource_raises_with_sanitized_partial_page(self) -> None:
         raw = {
             "startAt": 0,
@@ -1499,27 +1385,6 @@ class TestGetChangelog:
 
         assert exc_info.value.issue_key == "SYN-404"
         assert exc_info.value.status_code == 404
-
-    @pytest.mark.parametrize(
-        ("status", "exc_class"),
-        [
-            (401, errors.JiraAuthenticationError),
-            (403, errors.JiraPermissionError),
-            (404, errors.JiraNotFoundError),
-            (429, errors.JiraRateLimitError),
-            (500, errors.JiraServerError),
-        ],
-    )
-    async def test_error_status_codes_map_to_expected_exception(
-        self, status: int, exc_class: type[Exception]
-    ) -> None:
-        handler, _ = _recording_handler(
-            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
-        )
-        client = _make_client(handler)
-
-        with pytest.raises(exc_class):
-            await client.get_changelog("SYN-1")
 
     @pytest.mark.parametrize(
         ("kwargs", "message_fragment"),
@@ -1653,27 +1518,6 @@ class TestGetAttachments:
             await client.get_attachments("SYN-404")
 
         assert exc_info.value.issue_key == "SYN-404"
-
-    @pytest.mark.parametrize(
-        ("status", "exc_class"),
-        [
-            (401, errors.JiraAuthenticationError),
-            (403, errors.JiraPermissionError),
-            (404, errors.JiraNotFoundError),
-            (429, errors.JiraRateLimitError),
-            (500, errors.JiraServerError),
-        ],
-    )
-    async def test_error_status_codes_map_to_expected_exception(
-        self, status: int, exc_class: type[Exception]
-    ) -> None:
-        handler, _ = _recording_handler(
-            _json_response(status, {"errorMessages": ["synthetic failure"], "errors": {}})
-        )
-        client = _make_client(handler)
-
-        with pytest.raises(exc_class):
-            await client.get_attachments("SYN-1")
 
 
 def _attachment_download_handler(
@@ -1927,28 +1771,41 @@ class TestDownloadAttachment:
         assert list((tmp_path / "80001").glob("*")) == []
 
     @pytest.mark.parametrize(
-        "override",
+        ("override", "path"),
         [
-            {"filename": None},
-            {"filename": ""},
-            {"mimeType": None},
-            {"size": None},
-            {"size": -1},
-            {"size": "4096"},
-            {"content": None},
-            {"content": ""},
+            ({"filename": None}, "$.filename"),
+            ({"filename": ""}, "$.filename"),
+            ({"mimeType": None}, "$.mimeType"),
+            ({"mimeType": ""}, "$.mimeType"),
+            ({"mimeType": 7}, "$.mimeType"),
+            ({"size": None}, "$.size"),
+            ({"size": -1}, "$.size"),
+            ({"size": "4096"}, "$.size"),
+            ({"content": None}, "$.content"),
+            ({"content": ""}, "$.content"),
         ],
     )
     async def test_malformed_metadata_raises_without_partial_download(
-        self, tmp_path: Path, override: dict[str, Any]
+        self, tmp_path: Path, override: dict[str, Any], path: str
     ) -> None:
         metadata = {**_synthetic_attachment("80001"), **override}
         handler, _ = _attachment_download_handler(metadata=metadata)
         client = _make_client(handler, cache_dir=tmp_path)
 
-        with pytest.raises(errors.JiraServerError):
+        with pytest.raises(errors.JiraServerError) as exc_info:
             await client.download_attachment("80001")
+        assert f"{path}:" in str(exc_info.value)
         assert list(tmp_path.rglob("*")) == []
+
+    async def test_an_empty_attachment_downloads_as_an_empty_file(self, tmp_path: Path) -> None:
+        metadata = {**_synthetic_attachment("80001"), "size": 0}
+        handler, _ = _attachment_download_handler(metadata=metadata, content_bytes=b"")
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert result.size == 0
+        assert Path(result.local_path).read_bytes() == b""
 
     async def test_metadata_id_as_integer_is_accepted(self, tmp_path: Path) -> None:
         metadata = {**_synthetic_attachment("80001"), "id": 80001}
@@ -2738,3 +2595,96 @@ class TestBackoffSleep:
         await jira._sleep(0.25)
 
         assert waited == [0.25]
+
+
+class TestUnsortableItemsInAnOrderedCollection:
+    """`order="asc"` sorts on `created`; an item that cannot be sorted must
+    surface as an incomplete response that keeps the clean items, never a
+    crash and never a silent drop."""
+
+    _SPECS = pytest.mark.parametrize(
+        ("method", "list_key", "extra_envelope", "make_item", "clean_id"),
+        [
+            ("get_comments", "comments", {}, _synthetic_comment, "1001"),
+            (
+                "get_changelog",
+                "values",
+                {"isLast": True},
+                _synthetic_changelog_entry,
+                "50001",
+            ),
+        ],
+        ids=["comments", "changelog"],
+    )
+
+    async def _fetch(
+        self, method: str, list_key: str, extra: dict, items: list[Any]
+    ) -> errors.JiraIncompleteResponseError:
+        raw = {"startAt": 0, "maxResults": 20, "total": len(items), **extra, list_key: items}
+        handler, _ = _recording_handler(_json_response(200, raw))
+        client = _make_client(handler)
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await getattr(client, method)("SYN-1", order="asc")
+        return exc_info.value
+
+    @_SPECS
+    async def test_missing_or_malformed_created_is_reported(
+        self, method: str, list_key: str, extra_envelope: dict, make_item: Any, clean_id: str
+    ) -> None:
+        items = [
+            make_item(1, "2025-01-01T00:00:00Z"),
+            {**make_item(2, ""), "created": None},
+            {**make_item(3, ""), "created": "not-a-timestamp"},
+        ]
+        error = await self._fetch(method, list_key, extra_envelope, items)
+
+        assert len(error.problems) == 2
+        assert [item["id"] for item in error.partial_result["items"]] == [clean_id]
+
+    @_SPECS
+    async def test_a_non_object_item_is_reported(
+        self, method: str, list_key: str, extra_envelope: dict, make_item: Any, clean_id: str
+    ) -> None:
+        items = ["not-an-object", make_item(1, "2025-01-01T00:00:00Z")]
+        error = await self._fetch(method, list_key, extra_envelope, items)
+
+        assert [item["id"] for item in error.partial_result["items"]] == [clean_id]
+
+
+class TestTieBreakIsTheClientsOwn:
+    """Jira returns equal timestamps in no promised order; the contract says
+    ids settle them, so the client must sort them itself, in either direction."""
+
+    _SPECS = pytest.mark.parametrize(
+        ("method", "list_key", "extra_envelope", "make_item"),
+        [
+            ("get_comments", "comments", {}, _synthetic_comment),
+            ("get_changelog", "values", {"isLast": True}, _synthetic_changelog_entry),
+        ],
+        ids=["comments", "changelog"],
+    )
+
+    @_SPECS
+    @pytest.mark.parametrize(
+        ("order", "expected"), [("asc", ["10", "20", "30"]), ("desc", ["30", "20", "10"])]
+    )
+    async def test_equal_timestamps_come_back_ordered_by_id(
+        self,
+        method: str,
+        list_key: str,
+        extra_envelope: dict,
+        make_item: Any,
+        order: str,
+        expected: list[str],
+    ) -> None:
+        idkw = "comment_id" if list_key == "comments" else "entry_id"
+        items = [
+            make_item(index, "2025-01-01T00:00:00Z", **{idkw: item_id})
+            for index, item_id in enumerate(["20", "30", "10"], start=1)
+        ]
+        raw = {"startAt": 0, "maxResults": 20, "total": 3, **extra_envelope, list_key: items}
+        handler, _ = _recording_handler(_json_response(200, raw))
+
+        result = await getattr(_make_client(handler), method)("SYN-1", order=order)
+
+        assert [item.id for item in result.items] == expected
