@@ -74,11 +74,20 @@ fresh empty `[Unreleased]` above it, update the link definitions at the bottom,
 and bump `version` in `pyproject.toml` to match the tag. Bump both `version`
 fields in `server.json` (top level and the `pypi` package entry) to match as
 well — the MCP Registry publish step in `release.yml` fails closed if the
-package version it points at was never published. The Unreleased section
+package version it points at was never published. Run `uv lock` afterward so
+`uv.lock`'s own recorded project version matches too. The Unreleased section
 decides the version, strictly as `MAJOR.MINOR.PATCH`: a new tool, setting, or
 other additive capability is a MINOR bump; a fix alone is a PATCH. Before
 `1.0`, a breaking change to a published tool contract is also a MINOR bump,
 and it says so in the entry rather than relying on the number.
+
+Before pushing the tag, run `tests/test_version_sync.py` on its own
+(`uv run pytest tests/test_version_sync.py`) as a targeted check that
+`pyproject.toml`, both `server.json` version fields, `uv.lock`, and the
+CHANGELOG's newest released heading all agree -- do not rely on it having
+passed incidentally as part of a full `pytest`/`make check` run earlier in the
+same session, since a version file can change after that run without the
+suite being rerun.
 
 A MAJOR bump, and creating or pushing the release tag itself, happens only on
 the user's explicit instruction — never inferred, never bundled into a MINOR
