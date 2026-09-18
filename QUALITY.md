@@ -34,6 +34,32 @@ behavioral assertions. Do not introduce a repository-wide fail-under threshold
 until a justified baseline exists; add tests for relevant uncovered behavior or
 explain intentional exclusions.
 
+### Mutation check after a big feature
+
+Coverage shows that a line ran, not that a test would notice it changing. After
+a large new feature or module -- a new tool, a new module under `src/`, or a
+rework of normalization or pagination -- run a mutation check on the touched
+modules and put the surviving mutants in the pull-request summary: add an
+assertion for each one that matters, and name the ones that are equivalent.
+It is slow and is not a CI gate or a requirement for small changes.
+
+```bash
+uv run --with mutmut==3.8.0 mutmut run
+```
+
+The target modules are configured under `[tool.mutmut]` in `pyproject.toml`
+(`jira.py` and `models.py`; extend `source_paths`/`do_not_mutate` for a new
+module). `mutmut` is not a project dependency and needs Linux, macOS, or WSL --
+it does not run natively on Windows -- so on Windows copy the checkout into WSL
+first. `make mutation` wraps the command. A full run over the two modules is
+about 3,500 mutants and takes roughly 7 minutes on 4 cores; `mutmut results`
+lists the survivors and `mutmut show <name>` prints the change.
+
+Survivors that only alter message wording, the `operation=`/`issue_key=`
+metadata of an error, or a fallback the code documents as moot are usually
+equivalent for the tests; a survivor that changes a comparison, a boundary, or
+a sort key is a missing assertion.
+
 ## Test requirements
 
 ### Live Jira evidence and synthetic fixtures
@@ -179,5 +205,6 @@ question about the model.
 Implementation matches the request; public schemas remain intentional; relevant
 edge cases are covered; formatting, linting, type checking, and tests pass; no
 sensitive data was introduced; fixtures trace to sanitized test-site evidence;
-coverage was reviewed and reported; and documentation changes with public
-behavior.
+coverage was reviewed and reported; after a big new feature or module, the
+mutation check above was run and its survivors reported; and documentation
+changes with public behavior.

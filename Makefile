@@ -9,7 +9,9 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync hooks format format-check lint typecheck test test-all coverage check all clean
+MUTMUT_VERSION ?= 3.8.0
+
+.PHONY: help sync hooks format format-check lint typecheck test test-all coverage mutation check all clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -40,6 +42,9 @@ test-all: ## Run every test, including hygiene and slow ones
 
 coverage: ## Run the full suite with statement and branch coverage
 	uv run pytest -o addopts="" --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+
+mutation: ## Mutation-test the [tool.mutmut] modules (slow; Linux/macOS/WSL; after big features)
+	uv run --with mutmut==$(MUTMUT_VERSION) mutmut run
 
 check: sync format-check lint typecheck test coverage ## Run the full Definition of done sequence
 all: check ## Alias for check

@@ -52,6 +52,21 @@ markers = [
     "slow: spawns a subprocess",
 ]
 
+# Read by `mutmut run` (see QUALITY.md); mutmut is not a project dependency.
+[tool.mutmut]
+source_paths = ["src/"]
+do_not_mutate = [
+    "src/jira_mini_mcp/__init__.py",
+    "src/jira_mini_mcp/auth.py",
+    "src/jira_mini_mcp/errors.py",
+    "src/jira_mini_mcp/server.py",
+]
+pytest_add_cli_args = [
+    "--ignore=tests/test_docs_contract.py",
+    "--ignore=tests/test_tool_schema_hygiene.py",
+]
+pytest_add_cli_args_test_selection = ["tests/"]
+
 [tool.coverage.run]
 branch = true
 source = ["jira_mini_mcp"]
