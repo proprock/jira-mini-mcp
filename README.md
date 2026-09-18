@@ -390,6 +390,12 @@ branch coverage with missing lines; it is reviewed before closing each phase, an
 the project deliberately has no fail-under percentage until a meaningful baseline
 exists.
 
+On macOS/Linux (and CI), a `Makefile` wraps the same commands: `make check` runs
+the full sequence in order, stopping on the first failure; `make help` lists every
+target. It is a convenience wrapper only, not a second source of truth -- Windows
+contributors run the commands above directly, since this repo's dev machine is
+Windows without GNU Make on `PATH` by default.
+
 The default suite is fully offline. HTTP mocks trace to observations against a
 real Jira Cloud site, but raw responses are never committed: each fixture keeps
 the observed structure while every tenant, account, issue, cursor, timestamp, and
