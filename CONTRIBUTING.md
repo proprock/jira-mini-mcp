@@ -36,15 +36,17 @@ uv sync
 `.pre-commit-config.yaml` runs the fast checks on each commit: file hygiene,
 `ruff format --check`, `ruff check`, and `ty check`. The Ruff and ty hooks call
 `uv run`, so they use the versions locked in `uv.lock`, the same ones CI uses.
-Install either runner:
+The runner is [prek](https://github.com/j178/prek), a fast Rust drop-in for
+`pre-commit` that reads the same config. It is a dev dependency, so `uv sync`
+already installed it:
 
 ```bash
-uv tool install prek        # or: pipx install pre-commit
-prek install                # or: pre-commit install
+uv run prek install
 ```
 
-Run everything on demand with `prek run --all-files` (or
-`pre-commit run --all-files`). The full test suite is not a hook.
+Run everything on demand with `uv run prek run --all-files`. The full test
+suite is not a hook. Plain `pre-commit` also reads the config, but prek is the
+supported runner.
 
 ## Checks
 

@@ -1,4 +1,5 @@
-# Fast commit-time checks. Works with both `pre-commit` and `prek`.
+# Fast commit-time checks, run by `prek` (`uv run prek install`). Plain
+# `pre-commit` reads this file too, but prek is the supported runner.
 #
 # The local hooks run the project's own locked toolchain through `uv run`, so
 # these checks, CI, and QUALITY.md all use one set of tool versions (uv.lock).

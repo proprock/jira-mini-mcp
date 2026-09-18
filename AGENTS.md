@@ -56,6 +56,11 @@ suitable for direct installation from GitHub.
   assertions.
 - Use short-lived, focused branches for substantial features. Do not develop a
   substantial feature directly on `master`.
+- Commit hooks run through `prek` (a dev dependency; config in
+  `.pre-commit-config.yaml`). Install once with `uv run prek install`, and run
+  `uv run prek run --all-files` before committing. Never bypass hooks with
+  `--no-verify`; fix the failure. Hooks call `uv run`, so they use the versions
+  locked in `uv.lock` -- do not pin remote ruff or type-checker mirrors.
 - Record every externally observable change in `CHANGELOG.md` under
   `## [Unreleased]`, in the same change that makes it. Tests, CI, refactors, and
   documentation do not earn an entry; see `GIT-AND-RELEASES.md`.
