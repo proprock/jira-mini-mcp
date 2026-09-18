@@ -566,6 +566,147 @@ class TestGetIssue:
             await client.get_issue("SYN-1")
 
 
+class TestGetIssueReferenceFieldResolution:
+    """`watches`/`votes` resolve to real data via one follow-up GET each,
+    only when explicitly named in `fields` (PLAN.agents.md Extra 3)."""
+
+    _ISSUE_PATH = "/rest/api/3/issue/SYN-1"
+    _WATCHERS_PATH = "/rest/api/3/issue/SYN-1/watchers"
+    _VOTES_PATH = "/rest/api/3/issue/SYN-1/votes"
+
+    def _issue_response(self) -> httpx2.Response:
+        fixture = _load("jira_issue_watches_votes_fields.json")
+        return _json_response(200, {**fixture["raw"], "key": "SYN-1"})
+
+    async def test_default_fields_never_trigger_a_followup_call(self) -> None:
+        handler, seen = _router(
+            {("GET", self._ISSUE_PATH): _json_response(200, {"key": "SYN-1", "fields": {}})}
+        )
+        client = _make_client(handler)
+
+        await client.get_issue("SYN-1")
+
+        assert [request.url.path for request in seen] == [self._ISSUE_PATH]
+
+    async def test_requesting_neither_field_triggers_no_followup_call(self) -> None:
+        handler, seen = _router(
+            {("GET", self._ISSUE_PATH): _json_response(200, {"key": "SYN-1", "fields": {}})}
+        )
+        client = _make_client(handler)
+
+        await client.get_issue("SYN-1", fields=["summary"])
+
+        assert [request.url.path for request in seen] == [self._ISSUE_PATH]
+
+    async def test_requesting_watches_makes_exactly_one_followup_get(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue_response(),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    200, _load("jira_watchers.json")["raw"]
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.get_issue("SYN-1", fields=["watches"])
+
+        assert [request.url.path for request in seen] == [self._ISSUE_PATH, self._WATCHERS_PATH]
+        assert result.fields["watches"] == {
+            "watch_count": 1,
+            "is_watching": True,
+            "watchers": [User(account_id="syn-acc-501", display_name="Riley Chen")],
+        }
+
+    async def test_requesting_votes_makes_exactly_one_followup_get(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue_response(),
+                ("GET", self._VOTES_PATH): _json_response(200, _load("jira_votes.json")["raw"]),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.get_issue("SYN-1", fields=["votes"])
+
+        assert [request.url.path for request in seen] == [self._ISSUE_PATH, self._VOTES_PATH]
+        assert result.fields["votes"] == {
+            "vote_count": 1,
+            "has_voted": True,
+            "voters": [User(account_id="syn-acc-502", display_name="Jordan Blake")],
+        }
+
+    async def test_requesting_both_makes_exactly_one_followup_get_each(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue_response(),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    200, _load("jira_watchers.json")["raw"]
+                ),
+                ("GET", self._VOTES_PATH): _json_response(200, _load("jira_votes.json")["raw"]),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.get_issue("SYN-1", fields=["watches", "votes"])
+
+        assert sorted(request.url.path for request in seen) == sorted(
+            [self._ISSUE_PATH, self._WATCHERS_PATH, self._VOTES_PATH]
+        )
+        assert result.fields["watches"]["watch_count"] == 1
+        assert result.fields["votes"]["vote_count"] == 1
+
+    async def test_followup_permission_error_names_the_field(self) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue_response(),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    403, {"errorMessages": ["synthetic denial"], "errors": {}}
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            await client.get_issue("SYN-1", fields=["watches"])
+
+        assert "watches" in str(exc_info.value)
+        assert exc_info.value.issue_key == "SYN-1"
+
+    async def test_followup_malformed_response_raises_server_error_naming_field(self) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue_response(),
+                ("GET", self._VOTES_PATH): _json_response(200, {"votes": "not-an-int"}),
+            }
+        )
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraServerError) as exc_info:
+            await client.get_issue("SYN-1", fields=["votes"])
+
+        assert "votes" in str(exc_info.value)
+        assert exc_info.value.issue_key == "SYN-1"
+
+    async def test_followup_still_attempted_when_main_response_omits_the_stub(self) -> None:
+        """The gate is `fields` (what was requested), not the raw response --
+        so a tenant that omits the `watches` stub entirely still gets resolved."""
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): _json_response(200, {"key": "SYN-1", "fields": {}}),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    200, _load("jira_watchers.json")["raw"]
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        result = await client.get_issue("SYN-1", fields=["watches"])
+
+        assert [request.url.path for request in seen] == [self._ISSUE_PATH, self._WATCHERS_PATH]
+        assert result.fields["watches"]["watch_count"] == 1
+
+
 def _synthetic_comment(index: int, created: str, comment_id: str | None = None) -> dict[str, Any]:
     return {
         "id": comment_id or str(1000 + index),

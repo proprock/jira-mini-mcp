@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -38,6 +39,8 @@ from jira_mini_mcp.models import (
     normalize_comment,
     normalize_issue_fields,
     normalize_transition,
+    normalize_votes,
+    normalize_watchers,
     to_utc_iso,
 )
 
@@ -69,6 +72,18 @@ ISSUE_DEFAULT_FIELDS: tuple[str, ...] = (
     "parent",
     "subtasks",
 )
+
+# `watches`/`votes` are Extra 3's resolved reference fields: get_issue's raw
+# response only ever holds a `{self, count, flag}` stub for these (never the
+# actual watcher/voter list), so an explicit request for either name triggers
+# exactly one follow-up GET, normalized by the paired function here. Every
+# other Jira field ID passes straight through get_issue's `fields` argument.
+_ReferenceNormalizer = Callable[[Any, str, list[NormalizationProblem]], dict[str, Any] | None]
+
+_REFERENCE_FIELD_RESOLVERS: dict[str, tuple[str, _ReferenceNormalizer]] = {
+    "watches": ("watchers", normalize_watchers),
+    "votes": ("votes", normalize_votes),
+}
 
 # Jira Cloud v3's comment endpoint accepts arbitrary startAt/maxResults and an
 # orderBy=created|-created parameter, unlike search's cursor-only pagination.
@@ -587,6 +602,13 @@ class JiraClient:
                 normalized_fields = exc.partial_value
                 problems.extend(str(problem) for problem in exc.problems)
 
+        if not problems and fields is not None:
+            for field_name, (endpoint, normalizer) in _REFERENCE_FIELD_RESOLVERS.items():
+                if field_name in fields:
+                    normalized_fields[field_name] = await self._resolve_reference_field(
+                        issue_key, field_name, endpoint, normalizer
+                    )
+
         result = IssueDetail(key=key, fields=normalized_fields)
         if problems:
             raise _incomplete_response_error(
@@ -597,6 +619,39 @@ class JiraClient:
             )
 
         return result
+
+    async def _resolve_reference_field(
+        self,
+        issue_key: str,
+        field_name: str,
+        endpoint: str,
+        normalizer: _ReferenceNormalizer,
+    ) -> dict[str, Any]:
+        """Follow `fields.{field_name}`'s `self` link and return real data.
+
+        Only called for a field explicitly named in `get_issue`'s `fields`
+        argument (see `_REFERENCE_FIELD_RESOLVERS`), never as part of the
+        default field set. HTTP failures propagate as-is from `_get` (already
+        a well-typed, actionable `JiraMiniError`); `operation` names the field
+        being resolved so the message points at the actual cause instead of a
+        generic get_issue failure.
+        """
+        body = await self._get(
+            f"/rest/api/3/issue/{issue_key}/{endpoint}",
+            operation=f"get_issue (resolving '{field_name}')",
+            issue_key=issue_key,
+        )
+        problems: list[NormalizationProblem] = []
+        resolved = normalizer(body, f"$.{field_name}", problems)
+        if resolved is None or problems:
+            detail = "; ".join(str(problem) for problem in problems) or "expected an object"
+            raise errors.JiraServerError(
+                f"Jira returned an unusable '{field_name}' response for operation "
+                f"'get_issue': {detail}",
+                operation="get_issue",
+                issue_key=issue_key,
+            )
+        return resolved
 
     async def _fetch_comments_page(
         self,

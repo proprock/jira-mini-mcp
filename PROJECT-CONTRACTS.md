@@ -142,6 +142,37 @@ unspecified field selection for this endpoint, so the client sends the sentinel
 permissions. Do not include complete comments, attachment bodies, or changelog
 history; those belong to dedicated tools.
 
+Jira represents `watches` and `votes` on the issue resource as a link plus
+metadata -- `{self, watchCount, isWatching}` and `{self, votes, hasVoted}` --
+never the actual watcher or voter list. Requesting either by name resolves it
+to real data instead of returning that stub:
+
+```text
+watches = {watch_count, is_watching, watchers: [user, ...]}
+votes   = {vote_count, has_voted, voters: [user, ...]}
+```
+
+Each user in `watchers`/`voters` uses the common compact user shape. The count
+fields are renamed from Jira's `watchCount`/`isWatching` and `votes`/`hasVoted`
+to `watch_count`/`is_watching` and `vote_count`/`has_voted`; `vote_count` in
+particular avoids colliding with the outer `votes` field name, which Jira
+itself reuses for both the field key and the count. Resolving either field
+costs one extra request (`GET /issue/{key}/watchers` or
+`GET /issue/{key}/votes`), made only when that exact field name is explicitly
+present in `fields` -- never as part of the default field set, and never both
+when only one is requested. A failure on that extra request (for example, a
+403 when watcher visibility is restricted to project admins) is a tool error
+naming the field and the cause; it never falls back to Jira's raw stub or
+silently omits the field.
+
+Every other issue field ID Jira exposes -- including `worklog` (which embeds
+real but possibly truncated entries, not a link-only stub) and `comment`
+requested through `get_issue` rather than `get_comments` -- passes through
+unresolved, per the unknown/`customfield_*` rule above. `get_comments` and
+`get_attachments` already give complete, correctly paginated access to that
+data; resolving it a second time through `get_issue`'s `fields` is out of
+scope.
+
 ### `get_comments`
 
 Signature:

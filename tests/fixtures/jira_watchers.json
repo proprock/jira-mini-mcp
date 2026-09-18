@@ -1,0 +1,25 @@
+{
+  "_provenance": "GET /rest/api/3/issue/{key}/watchers observed live against a synthetic Jira Cloud test site 2026-09-18. accountId, emailAddress, avatarUrls, displayName, timeZone, and accountType are synthesized.",
+  "raw": {
+    "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/SYN-501/watchers",
+    "isWatching": true,
+    "watchCount": 1,
+    "watchers": [
+      {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-501",
+        "accountId": "syn-acc-501",
+        "emailAddress": "riley.chen@example.invalid",
+        "avatarUrls": { "48x48": "https://avatar.example.invalid/48" },
+        "displayName": "Riley Chen",
+        "active": true,
+        "timeZone": "America/New_York",
+        "accountType": "atlassian"
+      }
+    ]
+  },
+  "expected": {
+    "watch_count": 1,
+    "is_watching": true,
+    "watchers": [{ "account_id": "syn-acc-501", "display_name": "Riley Chen" }]
+  }
+}

@@ -13,6 +13,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   comma-separated, that return `content` only and skip
   `structuredContent`/`outputSchema`. Absent or empty changes nothing; an
   unrecognized tool name stops startup naming it and every valid tool name.
+- `get_issue` resolves `watches` and `votes` to real data -- `{watch_count,
+  is_watching, watchers}` and `{vote_count, has_voted, voters}` -- via one
+  extra request per field when either name is explicitly requested in
+  `fields`, instead of returning Jira's link-only `self`/count stub. Neither
+  field joins the default field set, and a failure on the extra request is a
+  tool error naming the field rather than a silent fallback.
 
 ## [0.9.3] - 2026-09-18
 

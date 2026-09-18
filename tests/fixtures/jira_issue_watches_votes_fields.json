@@ -1,0 +1,22 @@
+{
+  "_provenance": "GET /rest/api/3/issue/{key}?fields=watches,votes observed live against a synthetic Jira Cloud test site 2026-09-18. Both fields came back as Jira's self+metadata-only reference stub (no member list embedded); every value below is synthesized.",
+  "raw": {
+    "key": "SYN-501",
+    "fields": {
+      "watches": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/SYN-501/watchers",
+        "watchCount": 1,
+        "isWatching": true
+      },
+      "votes": {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/SYN-501/votes",
+        "votes": 0,
+        "hasVoted": false
+      }
+    }
+  },
+  "expected_normalized_fields": {
+    "watches": { "watch_count": 1, "is_watching": true },
+    "votes": { "vote_count": 0, "has_voted": false }
+  }
+}

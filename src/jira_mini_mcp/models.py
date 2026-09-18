@@ -468,6 +468,8 @@ KNOWN_FIELDS = frozenset(
         "project",
         "parent",
         "subtasks",
+        "watches",
+        "votes",
     }
 )
 
@@ -652,6 +654,93 @@ def _normalize_issue_link(
     if relationship is None or issue is None:
         return None
     return {"relationship": relationship, "issue": issue}
+
+
+def _normalize_watches_stub(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    """Normalize the `watches` reference stub embedded in an issue's `fields`.
+
+    Jira's issue resource represents `watches` as `{self, watchCount,
+    isWatching}` -- a REST link plus metadata, never the actual watcher list.
+    This drops `self` and keeps the count/flag, which is already useful and
+    safe without a follow-up request; `normalize_watchers` extends this same
+    shape with the real `watchers` list for get_issue's explicit resolution.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+    watch_count = raw.get("watchCount")
+    is_watching = raw.get("isWatching")
+    valid = True
+    if not isinstance(watch_count, int) or isinstance(watch_count, bool) or watch_count < 0:
+        _add_problem(problems, f"{path}.watchCount", "expected a non-negative integer")
+        valid = False
+    if not isinstance(is_watching, bool):
+        _add_problem(problems, f"{path}.isWatching", "expected a boolean")
+        valid = False
+    if not valid:
+        return None
+    return {"watch_count": watch_count, "is_watching": is_watching}
+
+
+def normalize_watchers(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    """Normalize GET /issue/{key}/watchers into get_issue's resolved `watches` shape."""
+    result = _normalize_watches_stub(raw, path, problems)
+    if result is None:
+        return None
+    watchers = _normalize_resource_list(
+        raw.get("watchers"), f"{path}.watchers", problems, _normalize_user
+    )
+    if watchers is None:
+        return None
+    result["watchers"] = watchers
+    return result
+
+
+def _normalize_votes_stub(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    """Normalize the `votes` reference stub embedded in an issue's `fields`.
+
+    Jira's issue resource represents `votes` as `{self, votes, hasVoted}` --
+    a REST link plus metadata, never the actual voter list. The count field
+    is renamed `vote_count` (Jira reuses "votes" for both the field key and
+    the count) so it never collides with the outer `votes` field name.
+    """
+    if not isinstance(raw, dict):
+        _add_problem(problems, path, "expected an object")
+        return None
+    vote_count = raw.get("votes")
+    has_voted = raw.get("hasVoted")
+    valid = True
+    if not isinstance(vote_count, int) or isinstance(vote_count, bool) or vote_count < 0:
+        _add_problem(problems, f"{path}.votes", "expected a non-negative integer")
+        valid = False
+    if not isinstance(has_voted, bool):
+        _add_problem(problems, f"{path}.hasVoted", "expected a boolean")
+        valid = False
+    if not valid:
+        return None
+    return {"vote_count": vote_count, "has_voted": has_voted}
+
+
+def normalize_votes(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> dict[str, Any] | None:
+    """Normalize GET /issue/{key}/votes into get_issue's resolved `votes` shape."""
+    result = _normalize_votes_stub(raw, path, problems)
+    if result is None:
+        return None
+    voters = _normalize_resource_list(
+        raw.get("voters"), f"{path}.voters", problems, _normalize_user
+    )
+    if voters is None:
+        return None
+    result["voters"] = voters
+    return result
 
 
 def normalize_comment(raw: Any, path: str, problems: list[NormalizationProblem]) -> Comment | None:
@@ -985,6 +1074,16 @@ def normalize_issue_fields(raw_fields: dict[str, Any], *, path: str = "$.fields"
             normalized = _normalize_resource_list(
                 value, resource_path, problems, _normalize_issue_link
             )
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "watches":
+            normalized = _normalize_watches_stub(value, resource_path, problems)
+            if normalized is not None:
+                result[key] = normalized
+            continue
+        if key == "votes":
+            normalized = _normalize_votes_stub(value, resource_path, problems)
             if normalized is not None:
                 result[key] = normalized
             continue

@@ -6,6 +6,7 @@ notes distinguish live-derived Jira Cloud shapes from hand-authored cases.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -812,6 +813,119 @@ class TestNormalizeIssueFields:
     def test_custom_field_string_matching_timestamp_shape_but_invalid_is_left_as_is(self) -> None:
         raw = {"customfield_10060": "2024-13-01T00:00:00Z"}
         assert models.normalize_issue_fields(raw) == {"customfield_10060": "2024-13-01T00:00:00Z"}
+
+    def test_watches_and_votes_resolve_to_compact_stub_without_self(self) -> None:
+        fixture = _load("jira_issue_watches_votes_fields.json")
+        result = models.normalize_issue_fields(fixture["raw"]["fields"])
+        assert result == fixture["expected_normalized_fields"]
+        assert "self" not in json.dumps(result)
+
+    @pytest.mark.parametrize(
+        ("raw", "problem_path"),
+        [
+            ({"watches": "not-an-object"}, "$.fields.watches"),
+            (
+                {"watches": {"watchCount": -1, "isWatching": True}},
+                "$.fields.watches.watchCount",
+            ),
+            (
+                {"watches": {"watchCount": 1, "isWatching": "yes"}},
+                "$.fields.watches.isWatching",
+            ),
+            ({"votes": "not-an-object"}, "$.fields.votes"),
+            ({"votes": {"votes": -1, "hasVoted": False}}, "$.fields.votes.votes"),
+            ({"votes": {"votes": 0, "hasVoted": "no"}}, "$.fields.votes.hasVoted"),
+        ],
+    )
+    def test_malformed_watches_or_votes_stub_reports_its_exact_path(
+        self, raw: dict, problem_path: str
+    ) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields(raw)
+
+        assert [problem.path for problem in exc_info.value.problems] == [problem_path]
+
+
+class TestNormalizeWatchersAndVotes:
+    """The follow-up shapes get_issue resolves `watches`/`votes` into."""
+
+    def test_normalize_watchers_matches_fixture(self) -> None:
+        fixture = _load("jira_watchers.json")
+        problems: list[models.NormalizationProblem] = []
+        result = models.normalize_watchers(fixture["raw"], "$.watches", problems)
+        assert not problems
+        assert result == {
+            "watch_count": fixture["expected"]["watch_count"],
+            "is_watching": fixture["expected"]["is_watching"],
+            "watchers": [models.User(**u) for u in fixture["expected"]["watchers"]],
+        }
+
+    def test_normalize_votes_matches_fixture(self) -> None:
+        fixture = _load("jira_votes.json")
+        problems: list[models.NormalizationProblem] = []
+        result = models.normalize_votes(fixture["raw"], "$.votes", problems)
+        assert not problems
+        assert result == {
+            "vote_count": fixture["expected"]["vote_count"],
+            "has_voted": fixture["expected"]["has_voted"],
+            "voters": [models.User(**u) for u in fixture["expected"]["voters"]],
+        }
+
+    def test_normalize_watchers_drops_self_and_extra_user_keys(self) -> None:
+        fixture = _load("jira_watchers.json")
+        problems: list[models.NormalizationProblem] = []
+        result = models.normalize_watchers(fixture["raw"], "$.watches", problems)
+        assert result is not None
+        dumped = json.dumps(
+            {**result, "watchers": [dataclasses.asdict(u) for u in result["watchers"]]}
+        )
+        assert "self" not in dumped
+        assert "emailAddress" not in dumped
+        assert "avatarUrls" not in dumped
+
+    def test_normalize_watchers_rejects_missing_watchers_list(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = {"watchCount": 0, "isWatching": False}
+        assert models.normalize_watchers(raw, "$.watches", problems) is None
+        assert [p.path for p in problems] == ["$.watches.watchers"]
+
+    def test_normalize_votes_rejects_missing_voters_list(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = {"votes": 0, "hasVoted": False}
+        assert models.normalize_votes(raw, "$.votes", problems) is None
+        assert [p.path for p in problems] == ["$.votes.voters"]
+
+    def test_normalize_watchers_rejects_non_object(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        assert models.normalize_watchers("not-an-object", "$.watches", problems) is None
+        assert [p.path for p in problems] == ["$.watches"]
+
+    def test_normalize_watchers_drops_malformed_member_and_reports_it(self) -> None:
+        """A malformed watcher entry is dropped, not the whole field -- matching
+        how every other resource-list field in normalize_issue_fields behaves.
+        The caller (JiraClient._resolve_reference_field) still treats any
+        recorded problem as a hard failure for get_issue's explicit resolution."""
+        problems: list[models.NormalizationProblem] = []
+        raw = {
+            "watchCount": 1,
+            "isWatching": False,
+            "watchers": [{"accountId": "a1"}],
+        }
+        result = models.normalize_watchers(raw, "$.watches", problems)
+        assert result == {"watch_count": 1, "is_watching": False, "watchers": []}
+        assert [p.path for p in problems] == ["$.watches.watchers[0].displayName"]
+
+    def test_normalize_votes_rejects_non_object(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        assert models.normalize_votes("not-an-object", "$.votes", problems) is None
+        assert [p.path for p in problems] == ["$.votes"]
+
+    def test_normalize_votes_drops_malformed_voter_and_reports_it(self) -> None:
+        problems: list[models.NormalizationProblem] = []
+        raw = {"votes": 1, "hasVoted": True, "voters": [{"accountId": "a1"}]}
+        result = models.normalize_votes(raw, "$.votes", problems)
+        assert result == {"vote_count": 1, "has_voted": True, "voters": []}
+        assert [p.path for p in problems] == ["$.votes.voters[0].displayName"]
 
 
 class TestDataclassShapes:

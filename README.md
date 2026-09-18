@@ -204,6 +204,22 @@ project, parent, subtasks
 An explicit `fields` list replaces the default completely; the server adds no
 hidden fields. `fields=[]` returns issue keys only.
 
+### Resolved reference fields
+
+Jira represents `watches` and `votes` as a link plus a count, never the actual
+watcher or voter list. Naming either one in `get_issue`'s `fields` resolves it
+to real data with one extra request per field:
+
+```text
+watches = {watch_count, is_watching, watchers: [{account_id, display_name}, ...]}
+votes   = {vote_count, has_voted, voters: [{account_id, display_name}, ...]}
+```
+
+Neither is in the default field set, so this never costs an extra request
+unless asked for by name. A failure on that extra request (for example, a 403
+when watcher visibility is restricted) is a tool error naming the field - it
+never falls back to Jira's raw `self`/count stub.
+
 ### Pagination
 
 Large collections never pretend to be complete. `get_comments` and
