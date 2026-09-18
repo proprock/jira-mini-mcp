@@ -58,6 +58,7 @@ context it needs for a ticket, the three ways to answer back, and nothing else.
 - [Configure](#configure)
 - [What the tools return](#what-the-tools-return)
 - [Writing to Jira](#writing-to-jira)
+- [Examples](#examples)
 - [Why so few tools](#why-so-few-tools)
 - [Compared with the alternatives](#compared-with-the-alternatives)
 - [Development](#development)
@@ -261,6 +262,66 @@ Three things are worth knowing before an agent writes:
 
 Each write tool is annotated `readOnlyHint=false` with honest `destructiveHint`
 and `idempotentHint` values, which is what `READ_ONLY_MODE` filters on.
+
+## Examples
+
+Requests an agent might send, each demonstrating one feature from the
+sections above.
+
+**Trim a response to just the fields you need:**
+
+```text
+get_issue(issue_key="PROJ-123", fields=["status", "assignee"])
+-> {"key": "PROJ-123", "status": {...}, "assignee": {...}}
+```
+
+`fields=[]` returns the key alone; an omitted `fields` falls back to the
+sixteen-field default.
+
+**Search with JQL, then page through the cursor:**
+
+```text
+search_issues(jql='project = PROJ AND status = "In Progress" ORDER BY updated DESC', limit=10)
+-> {"items": [...], "next_page_token": "eyJ..."}
+
+search_issues(jql='project = PROJ AND status = "In Progress" ORDER BY updated DESC', page_token="eyJ...")
+-> {"items": [...], "next_page_token": null}   # null token, last page
+```
+
+**"What happened since the last release" - comments filtered by date, not by count:**
+
+```text
+get_comments(issue_key="PROJ-123", since="2026-09-01T00:00:00Z", order="asc", limit=0)
+-> {"start_at": 0, "total": 4, "items": [...]}   # every comment since the timestamp
+```
+
+`since` takes an ISO-8601 timestamp with an explicit offset; `limit=0` lifts
+the 20-item default so the agent doesn't have to guess how many there are.
+
+**The full changelog, not a 20-item page of it:**
+
+```text
+get_changelog(issue_key="PROJ-123", limit=0)
+-> {"start_at": 0, "total": 37, "items": [...]}   # all 37 entries
+```
+
+**Resolve a workflow transition by name, not id, and close the loop with a comment:**
+
+```text
+transition_issue(issue_key="PROJ-123", to="Done", comment="Fixed in the linked PR")
+```
+
+An unrecognized `to` value lists every transition available from the issue's
+current status and where each one leads.
+
+**Update fields and reassign in one call (needs `READ_ONLY_MODE` unset or false):**
+
+```text
+update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["needs-review"]})
+```
+
+`labels` and `components` are replaced wholesale - read the issue first if the
+intent is to add one value rather than overwrite the list.
 
 ## Why so few tools
 
