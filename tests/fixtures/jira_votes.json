@@ -1,0 +1,21 @@
+{
+  "_provenance": "Envelope shape (self/votes/hasVoted/voters) observed live against GET /rest/api/3/issue/{key}/votes on a synthetic Jira Cloud test site 2026-09-18, where the test issue had zero votes. This fixture's non-empty voters list is hand-authored from that same observed envelope plus the documented Jira Cloud REST API v3 votes schema, since no issue with a vote was available to observe directly; every value is synthesized.",
+  "raw": {
+    "self": "https://synthetic-tenant.atlassian.net/rest/api/3/issue/SYN-501/votes",
+    "votes": 1,
+    "hasVoted": true,
+    "voters": [
+      {
+        "self": "https://synthetic-tenant.atlassian.net/rest/api/3/user?accountId=syn-acc-502",
+        "accountId": "syn-acc-502",
+        "displayName": "Jordan Blake",
+        "active": true
+      }
+    ]
+  },
+  "expected": {
+    "vote_count": 1,
+    "has_voted": true,
+    "voters": [{ "account_id": "syn-acc-502", "display_name": "Jordan Blake" }]
+  }
+}

@@ -385,8 +385,11 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
         (
             "Fetch one issue by key. fields replaces the default fields entirely -- "
             f"default: {', '.join(ISSUE_DEFAULT_FIELDS)}. fields=[] returns the key "
-            "with no fields. Does not include comments, attachments, or changelog "
-            "history; use the dedicated tools for those."
+            "with no fields. Requesting 'watches' or 'votes' resolves the real "
+            "watcher/voter list (watch_count/is_watching/watchers, "
+            "vote_count/has_voted/voters) via one extra request per field, instead "
+            "of Jira's own link-only stub. Does not include comments, attachments, "
+            "or changelog history; use the dedicated tools for those."
         ),
         _READ_ONLY,
     ),
