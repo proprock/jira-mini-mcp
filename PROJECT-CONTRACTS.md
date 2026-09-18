@@ -387,6 +387,28 @@ revoke any Jira permission; the API token's own account permissions still apply.
 Enabling it writes one line to stderr at startup naming the mode, and never a
 configured value.
 
+`DISABLE_STRUCTURED_OUTPUT` is an optional fifth value, also not a credential.
+It names tools, comma-separated, that should return `content` only and skip
+`structuredContent`/`outputSchema` entirely:
+
+```text
+DISABLE_STRUCTURED_OUTPUT
+```
+
+An absent or empty value changes nothing: every tool keeps structured output.
+Each named tool must exactly match one of the tools this server registers;
+surrounding whitespace around each name is ignored, and matching is
+case-sensitive since tool names are fixed identifiers, not prose. An
+unrecognized name is a startup `ConfigError` naming every bad value and every
+valid tool name — never a silent no-op, because a typo here would leave an
+operator believing a tool's payload was no longer duplicated when it still
+is. This switch controls MCP response shape only: a named tool's `content`
+JSON is byte-for-byte identical whether or not it is named here, it is
+parsed beside the three credentials rather than inside `JiraConfig`, and
+`JiraClient` is unaware of it. It prints no startup announcement, unlike
+`READ_ONLY_MODE`, since it changes response shape rather than which
+capabilities an agent has.
+
 ## Packaging and compatibility
 
 Use a standard `src` package layout, PEP 517/518/621 packaging, and a

@@ -4,10 +4,10 @@ Exactly three settings are required: JIRA_BASE_URL, JIRA_EMAIL, and
 JIRA_API_TOKEN. Credential values never leave this module in an error,
 log message, or repr.
 
-READ_ONLY_MODE is an optional fourth value, parsed here but deliberately
-kept out of JiraConfig: it selects which MCP tools get registered, which
-is server behavior rather than a Jira credential, and JiraClient must stay
-unaware of it.
+READ_ONLY_MODE and DISABLE_STRUCTURED_OUTPUT are optional settings, parsed
+here but deliberately kept out of JiraConfig: they select which MCP tools
+get registered and how they report their results, which is server behavior
+rather than a Jira credential, and JiraClient must stay unaware of both.
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ _REQUIRED_VARS: dict[str, str] = {
 _READ_ONLY_MODE_VAR = "READ_ONLY_MODE"
 _READ_ONLY_MODE_TRUE = frozenset({"true", "1", "on"})
 _READ_ONLY_MODE_FALSE = frozenset({"false", "0", "off", ""})
+
+_DISABLE_STRUCTURED_OUTPUT_VAR = "DISABLE_STRUCTURED_OUTPUT"
 
 
 class ConfigError(JiraMiniError):
@@ -89,6 +91,32 @@ def load_read_only_mode(env: Mapping[str, str] = os.environ) -> bool:
         "false, 0, or off to register every tool (case-insensitive); "
         "leaving it unset also registers every tool."
     )
+
+
+def load_disable_structured_output(
+    valid_tool_names: frozenset[str],
+    env: Mapping[str, str] = os.environ,
+) -> frozenset[str]:
+    """Parse the optional DISABLE_STRUCTURED_OUTPUT comma-separated list.
+
+    Absent or empty disables nothing. Each entry is stripped of surrounding
+    whitespace and matched case-sensitively against valid_tool_names; a name
+    outside that set is a startup error naming every bad value and every
+    valid tool name, never a silently ignored typo.
+    """
+    raw = env.get(_DISABLE_STRUCTURED_OUTPUT_VAR)
+    if not raw or not raw.strip():
+        return frozenset()
+
+    names = frozenset(name.strip() for name in raw.split(",") if name.strip())
+    unknown = names - valid_tool_names
+    if unknown:
+        raise ConfigError(
+            f"{_DISABLE_STRUCTURED_OUTPUT_VAR} names {sorted(unknown)!r}, which "
+            f"{'is' if len(unknown) == 1 else 'are'} not a registered tool "
+            f"name. Valid tool names: {', '.join(sorted(valid_tool_names))}."
+        )
+    return names
 
 
 class BasicTokenAuth(httpx2.BasicAuth):

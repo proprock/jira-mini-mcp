@@ -65,6 +65,7 @@ async def tool_definitions() -> list[ToolParam]:
     previous = {key: os.environ.get(key) for key in _SYNTHETIC_ENV}
     os.environ.update(_SYNTHETIC_ENV)
     read_only = os.environ.pop("READ_ONLY_MODE", None)
+    disable_structured_output = os.environ.pop("DISABLE_STRUCTURED_OUTPUT", None)
     try:
         async with Client(create_server()) as client:
             tools = (await client.list_tools()).tools
@@ -76,6 +77,8 @@ async def tool_definitions() -> list[ToolParam]:
                 os.environ[key] = value
         if read_only is not None:
             os.environ["READ_ONLY_MODE"] = read_only
+        if disable_structured_output is not None:
+            os.environ["DISABLE_STRUCTURED_OUTPUT"] = disable_structured_output
 
     return [
         ToolParam(

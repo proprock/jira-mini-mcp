@@ -60,6 +60,7 @@ async def tools(monkeypatch: pytest.MonkeyPatch) -> list:
     monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
     monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
     monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+    monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
 
     async with Client(create_server()) as client:
         return list((await client.list_tools()).tools)

@@ -34,7 +34,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from jira_mini_mcp import errors
-from jira_mini_mcp.auth import BasicTokenAuth, load_config_from_env, load_read_only_mode
+from jira_mini_mcp.auth import (
+    BasicTokenAuth,
+    load_config_from_env,
+    load_disable_structured_output,
+    load_read_only_mode,
+)
 from jira_mini_mcp.jira import (
     HTTP_TIMEOUT,
     ISSUE_DEFAULT_FIELDS,
@@ -89,6 +94,7 @@ class _ToolSpec:
     fn: Callable[..., Any]
     description: str
     annotations: ToolAnnotations
+    structured_output: bool | None = None
 
 
 @dataclass
@@ -469,6 +475,12 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
 )
 
 
+def _tool_name(spec: _ToolSpec) -> str:
+    # spec.fn is always a plain `async def` function defined in this module,
+    # but Callable itself has no __name__ in typeshed, so ty needs getattr.
+    return getattr(spec.fn, "__name__")  # noqa: B009
+
+
 def _registered_tools(specs: Sequence[_ToolSpec], *, read_only_mode: bool) -> tuple[_ToolSpec, ...]:
     """Select the tools to register, gating on the read-only annotation.
 
@@ -486,19 +498,33 @@ def create_server(
         [MCPServer[AppContext]], AbstractAsyncContextManager[AppContext]
     ] = app_lifespan,
     read_only_mode: bool | None = None,
+    disable_structured_output: frozenset[str] | None = None,
 ) -> MCPServer[AppContext]:
     """Build the server with its tools registered but not yet running.
 
-    `read_only_mode` defaults to the READ_ONLY_MODE environment value, so
-    an unrecognized setting stops startup here -- before any tool is
-    registered -- rather than at the first call.
+    `read_only_mode` defaults to the READ_ONLY_MODE environment value, and
+    `disable_structured_output` defaults to the DISABLE_STRUCTURED_OUTPUT
+    environment value, so an unrecognized setting stops startup here --
+    before any tool is registered -- rather than at the first call.
     """
     if read_only_mode is None:
         read_only_mode = load_read_only_mode()
+    if disable_structured_output is None:
+        disable_structured_output = load_disable_structured_output(
+            valid_tool_names=frozenset(_tool_name(spec) for spec in _TOOL_SPECS)
+        )
 
     server: MCPServer[AppContext] = MCPServer(name="jira-mini-mcp", lifespan=lifespan)
     for spec in _registered_tools(_TOOL_SPECS, read_only_mode=read_only_mode):
-        server.add_tool(spec.fn, description=spec.description, annotations=spec.annotations)
+        structured_output = spec.structured_output
+        if _tool_name(spec) in disable_structured_output:
+            structured_output = False
+        server.add_tool(
+            spec.fn,
+            description=spec.description,
+            annotations=spec.annotations,
+            structured_output=structured_output,
+        )
 
     return server
 
@@ -529,7 +555,13 @@ def main() -> None:
             "jira-mini-mcp: READ_ONLY_MODE enabled; registering read-only tools only.",
             file=sys.stderr,
         )
-    create_server(read_only_mode=read_only_mode).run()
+    disable_structured_output = load_disable_structured_output(
+        valid_tool_names=frozenset(_tool_name(spec) for spec in _TOOL_SPECS)
+    )
+    create_server(
+        read_only_mode=read_only_mode,
+        disable_structured_output=disable_structured_output,
+    ).run()
 
 
 if __name__ == "__main__":

@@ -219,9 +219,14 @@ def _server_with(fake: FakeJiraClient) -> MCPServer[AppContext]:
         # the type checker that on our behalf.
         yield AppContext(jira_client=cast(JiraClient, fake))
 
-    # An explicit read_only_mode keeps every adapter test independent of
-    # whatever READ_ONLY_MODE the developer's shell happens to export.
-    return create_server(lifespan=fake_lifespan, read_only_mode=False)
+    # Explicit read_only_mode/disable_structured_output keep every adapter
+    # test independent of whatever READ_ONLY_MODE/DISABLE_STRUCTURED_OUTPUT
+    # the developer's shell happens to export.
+    return create_server(
+        lifespan=fake_lifespan,
+        read_only_mode=False,
+        disable_structured_output=frozenset(),
+    )
 
 
 def _text_of(result: Any) -> str:
@@ -1089,6 +1094,7 @@ class TestReadOnlyModeGate:
         monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
         monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
         monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         if raw is None:
             monkeypatch.delenv("READ_ONLY_MODE", raising=False)
         else:
@@ -1153,7 +1159,7 @@ class TestReadOnlyModeGate:
         # An explicit value means the environment is never consulted, which
         # is what keeps every other test in this module independent of the
         # developer's own shell.
-        assert create_server(read_only_mode=True) is not None
+        assert create_server(read_only_mode=True, disable_structured_output=frozenset()) is not None
 
     def test_startup_announces_read_only_mode_without_leaking_values(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1162,6 +1168,7 @@ class TestReadOnlyModeGate:
         monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
         monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
         monkeypatch.setenv("READ_ONLY_MODE", "true")
+        monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
         server_module.main()
@@ -1177,6 +1184,7 @@ class TestReadOnlyModeGate:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
         server_module.main()
@@ -1184,6 +1192,149 @@ class TestReadOnlyModeGate:
         captured = capsys.readouterr()
         assert captured.err == ""
         assert captured.out == ""
+
+
+class TestDisableStructuredOutput:
+    """DISABLE_STRUCTURED_OUTPUT selects which tools skip structuredContent.
+
+    `content` stays byte-for-byte identical either way -- only whether it is
+    also duplicated as structuredContent/outputSchema changes.
+    """
+
+    @staticmethod
+    def _configure(monkeypatch: pytest.MonkeyPatch, raw: str | None) -> None:
+        monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        if raw is None:
+            monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
+        else:
+            monkeypatch.setenv("DISABLE_STRUCTURED_OUTPUT", raw)
+
+    @pytest.mark.parametrize("raw", [None, "", "   "])
+    async def test_absent_or_empty_leaves_every_tool_structured(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str | None
+    ) -> None:
+        self._configure(monkeypatch, raw)
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert [tool.name for tool in tools] == list(TOOL_NAMES)
+        for tool in tools:
+            assert tool.output_schema is not None
+
+    async def test_single_named_tool_loses_only_its_output_schema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "add_comment")
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        by_name = {tool.name: tool for tool in tools}
+        assert by_name["add_comment"].output_schema is None
+        for name in TOOL_NAMES:
+            if name != "add_comment":
+                assert by_name[name].output_schema is not None
+
+    async def test_multiple_named_tools_lose_their_output_schema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "add_comment,transition_issue")
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        by_name = {tool.name: tool for tool in tools}
+        assert by_name["add_comment"].output_schema is None
+        assert by_name["transition_issue"].output_schema is None
+        for name in TOOL_NAMES:
+            if name not in {"add_comment", "transition_issue"}:
+                assert by_name[name].output_schema is not None
+
+    async def test_call_tool_drops_structured_content_but_keeps_content_identical(
+        self,
+    ) -> None:
+        fake = FakeJiraClient()
+        arguments = {"issue_key": "SYN-1", "body": "text"}
+
+        async with Client(_server_with(fake)) as client:
+            enabled_result = await client.call_tool("add_comment", arguments)
+
+        @asynccontextmanager
+        async def fake_lifespan(_server: MCPServer[AppContext]):
+            yield AppContext(jira_client=cast(JiraClient, fake))
+
+        disabled_server = create_server(
+            lifespan=fake_lifespan,
+            read_only_mode=False,
+            disable_structured_output=frozenset({"add_comment"}),
+        )
+        async with Client(disabled_server) as client:
+            disabled_result = await client.call_tool("add_comment", arguments)
+
+        assert enabled_result.structured_content is not None
+        assert disabled_result.structured_content is None
+        assert _text_of(disabled_result) == _text_of(enabled_result)
+
+    def test_unknown_tool_name_stops_startup_before_any_tool_is_registered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "not_a_tool")
+
+        with pytest.raises(ConfigError) as exc_info:
+            create_server()
+
+        message = str(exc_info.value)
+        assert "not_a_tool" in message
+        for name in TOOL_NAMES:
+            assert name in message
+
+    def test_multiple_unknown_tool_names_are_all_named(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "not_a_tool,also_not_a_tool")
+
+        with pytest.raises(ConfigError) as exc_info:
+            create_server()
+
+        message = str(exc_info.value)
+        assert "not_a_tool" in message
+        assert "also_not_a_tool" in message
+
+    async def test_whitespace_around_names_is_trimmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, " add_comment , transition_issue ")
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        by_name = {tool.name: tool for tool in tools}
+        assert by_name["add_comment"].output_schema is None
+        assert by_name["transition_issue"].output_schema is None
+
+    def test_wrong_case_name_is_rejected_not_silently_normalized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "Add_Comment")
+
+        with pytest.raises(ConfigError) as exc_info:
+            create_server()
+        assert "Add_Comment" in str(exc_info.value)
+
+    def test_explicit_argument_overrides_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISABLE_STRUCTURED_OUTPUT", "not_a_tool")
+        # An explicit value means the environment is never consulted, which
+        # is what keeps every other test in this module independent of the
+        # developer's own shell.
+        assert (
+            create_server(read_only_mode=False, disable_structured_output=frozenset()) is not None
+        )
 
 
 async def _one_request_through(base_url: str) -> None:
@@ -1234,6 +1385,7 @@ class TestRequestLogRedaction:
     ) -> None:
         logging.getLogger("httpx2").setLevel(logging.NOTSET)
         monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
         server_module.main()
@@ -1252,6 +1404,7 @@ class TestHttpTimeout:
         monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
         monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
         monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
 
         timeouts: list[Any] = []
         original_init = httpx2.AsyncClient.__init__

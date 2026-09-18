@@ -7,6 +7,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `DISABLE_STRUCTURED_OUTPUT`, an optional setting naming tools,
+  comma-separated, that return `content` only and skip
+  `structuredContent`/`outputSchema`. Absent or empty changes nothing; an
+  unrecognized tool name stops startup naming it and every valid tool name.
+
 ## [0.9.3] - 2026-09-18
 
 ### Fixed

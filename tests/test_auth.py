@@ -15,6 +15,20 @@ VALID_ENV = {
     "JIRA_API_TOKEN": "super-secret-token",
 }
 
+VALID_TOOL_NAMES = frozenset(
+    {
+        "search_issues",
+        "get_issue",
+        "get_comments",
+        "get_attachments",
+        "download_attachment",
+        "get_changelog",
+        "add_comment",
+        "transition_issue",
+        "update_issue",
+    }
+)
+
 
 class TestLoadConfigFromEnv:
     def test_loads_exact_three_variables(self) -> None:
@@ -127,6 +141,74 @@ class TestLoadReadOnlyMode:
         env = dict(VALID_ENV, READ_ONLY_MODE="maybe")
         with pytest.raises(auth.ConfigError) as exc_info:
             auth.load_read_only_mode(env=env)
+
+        message = str(exc_info.value)
+        assert "super-secret-token" not in message
+        assert "developer@example.com" not in message
+        assert "example.atlassian.net" not in message
+
+
+class TestLoadDisableStructuredOutput:
+    """DISABLE_STRUCTURED_OUTPUT is MCP response-shape behavior, not a Jira
+    credential: it is parsed beside JiraConfig, never inside it."""
+
+    def test_absent_variable_disables_nothing(self) -> None:
+        result = auth.load_disable_structured_output(VALID_TOOL_NAMES, env=VALID_ENV)
+        assert result == frozenset()
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_empty_variable_disables_nothing(self, raw: str) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT=raw)
+        result = auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+        assert result == frozenset()
+
+    def test_single_valid_name(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="add_comment")
+        result = auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+        assert result == frozenset({"add_comment"})
+
+    def test_multiple_valid_names_with_surrounding_whitespace(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT=" add_comment, transition_issue ")
+        result = auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+        assert result == frozenset({"add_comment", "transition_issue"})
+
+    def test_unknown_name_raises_config_error_naming_it_and_the_valid_names(
+        self,
+    ) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="not_a_tool")
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+
+        message = str(exc_info.value)
+        assert "not_a_tool" in message
+        for name in VALID_TOOL_NAMES:
+            assert name in message
+
+    def test_multiple_unknown_names_are_all_reported(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="not_a_tool,also_not_a_tool")
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+
+        message = str(exc_info.value)
+        assert "not_a_tool" in message
+        assert "also_not_a_tool" in message
+
+    def test_wrong_case_name_is_treated_as_unknown(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="Add_Comment")
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
+        assert "Add_Comment" in str(exc_info.value)
+
+    def test_config_load_is_unaffected_by_the_variable(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="add_comment")
+        config = auth.load_config_from_env(env=env)
+        assert config.base_url == VALID_ENV["JIRA_BASE_URL"]
+        assert not hasattr(config, "disable_structured_output")
+
+    def test_invalid_value_error_never_echoes_credentials(self) -> None:
+        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="not_a_tool")
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
 
         message = str(exc_info.value)
         assert "super-secret-token" not in message
