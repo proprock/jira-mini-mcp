@@ -55,7 +55,7 @@ uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 uv run pytest
-uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+uv run pytest -o addopts="" --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
 ```
 
 `uv run ruff format .` applies formatting. The last command reports statement
@@ -146,7 +146,7 @@ Releases are cut by the maintainer:
 - A release renames `[Unreleased]` to the new version and date, and bumps
   `version` in `pyproject.toml` and both version fields in `server.json` to
   match, then runs `uv lock`.
-- Before pushing the tag, run `uv run pytest tests/test_version_sync.py` to
+- Before pushing the tag, run `uv run python scripts/check_version_sync.py` to
   confirm all of those agree with the newest CHANGELOG heading.
 - A MAJOR bump, and creating or pushing a release tag, happen only on the
   maintainer's explicit instruction.

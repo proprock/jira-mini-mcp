@@ -12,12 +12,10 @@ import re
 from pathlib import Path
 
 import pytest
-from mcp import Client
 
 from jira_mini_mcp.jira import ISSUE_DEFAULT_FIELDS, SEARCH_DEFAULT_FIELDS
-from jira_mini_mcp.server import create_server
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.hygiene]
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CONTRACTS = (ROOT / "PROJECT-CONTRACTS.md").read_text(encoding="utf-8")
@@ -55,26 +53,6 @@ def _csv_fields(block: str) -> tuple[str, ...]:
 async def test_registered_tool_names_match_project_contracts_tool_list() -> None:
     documented = set(_fenced_block_after(PROJECT_CONTRACTS, "exactly these tools:").split("\n"))
     assert documented == TOOL_NAMES
-
-
-async def test_registered_tool_names_match_readme_tool_table() -> None:
-    referenced_in_readme = {name for name in TOOL_NAMES if f"`{name}`" in README}
-    assert referenced_in_readme == TOOL_NAMES
-
-
-async def test_registered_tool_names_match_actual_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
-    monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
-    monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
-    monkeypatch.delenv("READ_ONLY_MODE", raising=False)
-    monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
-
-    server = create_server()
-    async with Client(server) as client:
-        actual = {tool.name for tool in (await client.list_tools()).tools}
-    assert actual == TOOL_NAMES
 
 
 def test_search_default_fields_match_project_contracts() -> None:

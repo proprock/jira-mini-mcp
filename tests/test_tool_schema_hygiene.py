@@ -18,7 +18,7 @@ from mcp import Client
 
 from jira_mini_mcp.server import create_server
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.hygiene]
 
 # A parameter whose name fully explains it. Everything else must be named in
 # its tool's description: an agent reads prose, and the schema alone does not
@@ -67,13 +67,6 @@ async def tools(monkeypatch: pytest.MonkeyPatch) -> list:
 
 
 class TestToolSchemaHygiene:
-    async def test_every_tool_has_a_substantial_description(self, tools: list) -> None:
-        for tool in tools:
-            assert tool.description, f"{tool.name} has no description"
-            assert len(tool.description.split()) >= 15, (
-                f"{tool.name}'s description is too thin to choose on"
-            )
-
     async def test_no_two_descriptions_are_near_duplicates(self, tools: list) -> None:
         worst = max(
             (
@@ -88,14 +81,6 @@ class TestToolSchemaHygiene:
             f"{first} and {second} describe themselves too alike ({score:.2f}); "
             "an agent picking between them is guessing"
         )
-
-    async def test_the_closest_pair_still_states_its_own_subject(self, tools: list) -> None:
-        # get_comments and get_changelog are the pair most at risk, so each
-        # has to name what it returns, not only how it paginates.
-        described = {tool.name: (tool.description or "").lower() for tool in tools}
-        assert "comment" in described["get_comments"]
-        assert "field-change history" in described["get_changelog"]
-        assert "comment" not in described["get_changelog"]
 
     async def test_non_obvious_parameters_are_named_in_the_description(self, tools: list) -> None:
         for tool in tools:

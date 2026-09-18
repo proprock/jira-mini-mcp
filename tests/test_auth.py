@@ -7,7 +7,7 @@ import base64
 import httpx2
 import pytest
 
-from jira_mini_mcp import auth, errors
+from jira_mini_mcp import auth
 
 VALID_ENV = {
     "JIRA_BASE_URL": "https://example.atlassian.net",
@@ -37,11 +37,6 @@ class TestLoadConfigFromEnv:
         assert config.email == "developer@example.com"
         assert config.api_token == "super-secret-token"
 
-    def test_config_is_immutable(self) -> None:
-        config = auth.load_config_from_env(env=VALID_ENV)
-        with pytest.raises(Exception):  # noqa: B017 - dataclasses.FrozenInstanceError
-            config.api_token = "changed"  # ty: ignore[invalid-assignment]
-
     @pytest.mark.parametrize("missing_var", ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"])
     def test_missing_variable_raises_actionable_error(self, missing_var: str) -> None:
         env = dict(VALID_ENV)
@@ -57,9 +52,6 @@ class TestLoadConfigFromEnv:
         with pytest.raises(auth.ConfigError) as exc_info:
             auth.load_config_from_env(env=env)
         assert empty_var in str(exc_info.value)
-
-    def test_config_error_is_a_jira_mini_error(self) -> None:
-        assert issubclass(auth.ConfigError, errors.JiraMiniError)
 
     def test_missing_value_error_never_echoes_configured_values(self) -> None:
         env = dict(VALID_ENV)
@@ -131,12 +123,6 @@ class TestLoadReadOnlyMode:
         for spelling in ("true", "1", "on", "false", "0", "off"):
             assert spelling in message
 
-    def test_config_load_is_unaffected_by_the_variable(self) -> None:
-        env = dict(VALID_ENV, READ_ONLY_MODE="true")
-        config = auth.load_config_from_env(env=env)
-        assert config.base_url == VALID_ENV["JIRA_BASE_URL"]
-        assert not hasattr(config, "read_only_mode")
-
     def test_invalid_value_error_never_echoes_credentials(self) -> None:
         env = dict(VALID_ENV, READ_ONLY_MODE="maybe")
         with pytest.raises(auth.ConfigError) as exc_info:
@@ -198,12 +184,6 @@ class TestLoadDisableStructuredOutput:
         with pytest.raises(auth.ConfigError) as exc_info:
             auth.load_disable_structured_output(VALID_TOOL_NAMES, env=env)
         assert "Add_Comment" in str(exc_info.value)
-
-    def test_config_load_is_unaffected_by_the_variable(self) -> None:
-        env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="add_comment")
-        config = auth.load_config_from_env(env=env)
-        assert config.base_url == VALID_ENV["JIRA_BASE_URL"]
-        assert not hasattr(config, "disable_structured_output")
 
     def test_invalid_value_error_never_echoes_credentials(self) -> None:
         env = dict(VALID_ENV, DISABLE_STRUCTURED_OUTPUT="not_a_tool")

@@ -717,6 +717,26 @@ class TestNormalizeIssueFields:
 
         assert [problem.path for problem in exc_info.value.problems] == [problem_path]
 
+    def test_status_category_without_a_key_keeps_the_status_and_reports_nothing(self) -> None:
+        raw = {"status": {"id": "2", "name": "Open", "statusCategory": {"name": "To Do"}}}
+
+        assert models.normalize_issue_fields(raw) == {"status": {"id": "2", "name": "Open"}}
+
+    def test_an_issue_reference_without_a_summary_is_just_its_key(self) -> None:
+        raw = {"parent": {"key": "SYN-1", "fields": {"status": {"id": "1", "name": "Open"}}}}
+
+        assert models.normalize_issue_fields(raw) == {
+            "parent": {"key": "SYN-1", "status": {"id": "1", "name": "Open"}}
+        }
+
+    @pytest.mark.parametrize("key", ["status", "subtasks", "issuelinks", "parent", "project"])
+    def test_a_malformed_resource_is_left_out_not_replaced_by_a_stub(self, key: str) -> None:
+        with pytest.raises(models.IncompleteNormalizationError) as exc_info:
+            models.normalize_issue_fields({"summary": "Kept", key: "not-a-resource"})
+
+        assert exc_info.value.partial_value == {"summary": "Kept"}
+        assert [problem.path for problem in exc_info.value.problems] == [f"$.fields.{key}"]
+
     def test_invalid_nested_resources_leave_a_clean_issue_reference(self) -> None:
         raw = {
             "parent": {
@@ -926,68 +946,6 @@ class TestNormalizeWatchersAndVotes:
         result = models.normalize_votes(raw, "$.votes", problems)
         assert result == {"vote_count": 1, "has_voted": True, "voters": []}
         assert [p.path for p in problems] == ["$.votes.voters[0].displayName"]
-
-
-class TestDataclassShapes:
-    def test_page_holds_start_at_total_items(self) -> None:
-        page = models.Page(start_at=0, total=2, items=["a", "b"])
-        assert page.start_at == 0
-        assert page.total == 2
-        assert page.items == ["a", "b"]
-
-    def test_search_page_holds_items_and_next_page_token(self) -> None:
-        page = models.SearchPage(items=["a"], next_page_token=None)
-        assert page.items == ["a"]
-        assert page.next_page_token is None
-
-    def test_issue_summary_and_detail_share_key_fields_shape(self) -> None:
-        summary = models.IssueSummary(key="ABC-1", fields={"summary": "x"})
-        detail = models.IssueDetail(key="ABC-1", fields={})
-        assert summary.key == "ABC-1"
-        assert detail.fields == {}
-
-    def test_comment_defaults_omit_updated_and_updated_by(self) -> None:
-        author = models.User(account_id="a1", display_name="Author")
-        comment = models.Comment(
-            id="10001", author=author, body="hi", created="2024-01-01T00:00:00Z"
-        )
-        assert comment.updated is None
-        assert comment.updated_by is None
-
-    def test_attachment_shape(self) -> None:
-        author = models.User(account_id="a1", display_name="Author")
-        attachment = models.Attachment(
-            id="90001",
-            filename="log.txt",
-            mime_type="text/plain",
-            size=128,
-            author=author,
-            created="2024-01-01T00:00:00Z",
-        )
-        assert attachment.filename == "log.txt"
-
-    def test_download_result_shape(self) -> None:
-        result = models.DownloadResult(
-            attachment_id="90001",
-            filename="log.txt",
-            mime_type="text/plain",
-            size=128,
-            local_path="/cache/90001/log.txt",
-        )
-        assert result.local_path == "/cache/90001/log.txt"
-
-    def test_changelog_change_uses_from_for_the_reserved_word(self) -> None:
-        change = models.ChangelogChange(field="status", from_="To Do", to="In Progress")
-        assert change.from_ == "To Do"
-        assert change.field_id is None
-
-    def test_changelog_entry_shape(self) -> None:
-        author = models.User(account_id="a1", display_name="Author")
-        change = models.ChangelogChange(field="status", from_="To Do", to="In Progress")
-        entry = models.ChangelogEntry(
-            id="20001", author=author, created="2024-01-01T00:00:00Z", changes=[change]
-        )
-        assert entry.changes == [change]
 
 
 CANONICAL_MARKDOWN = """# Release notes

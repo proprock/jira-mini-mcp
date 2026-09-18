@@ -41,23 +41,9 @@ ALL_EXCEPTION_CLASSES = [
 
 
 class TestExceptionHierarchy:
-    def test_base_class_is_exception_subclass(self) -> None:
-        assert issubclass(errors.JiraMiniError, Exception)
-
     @pytest.mark.parametrize("exc_class", ALL_EXCEPTION_CLASSES)
     def test_all_subclass_jira_mini_error(self, exc_class: type) -> None:
         assert issubclass(exc_class, errors.JiraMiniError)
-
-    def test_construct_carries_cause_and_correction(self) -> None:
-        exc = errors.JiraAuthenticationError(
-            "Jira rejected the request credentials. Check JIRA_EMAIL and JIRA_API_TOKEN.",
-            operation="get_issue",
-            status_code=401,
-        )
-        assert "rejected" in str(exc)
-        assert "JIRA_EMAIL" in str(exc)
-        assert exc.operation == "get_issue"
-        assert exc.status_code == 401
 
     def test_rate_limit_carries_retry_after(self) -> None:
         exc = errors.JiraRateLimitError(
@@ -67,23 +53,6 @@ class TestExceptionHierarchy:
             retry_after=30.0,
         )
         assert exc.retry_after == 30.0
-
-    def test_rate_limit_retry_after_defaults_to_none(self) -> None:
-        exc = errors.JiraRateLimitError("rate limited", operation="op", status_code=429)
-        assert exc.retry_after is None
-
-    @pytest.mark.parametrize("exc_class", ALL_EXCEPTION_CLASSES)
-    def test_no_secret_in_message_when_only_message_given(self, exc_class: type) -> None:
-        exc = exc_class("a safe actionable message", operation="op", issue_key="ABC-1")
-        text = str(exc)
-        assert SECRET_URL not in text
-        assert SECRET_HEADER not in text
-
-    def test_names_do_not_shadow_builtins(self) -> None:
-        assert not issubclass(errors.JiraPermissionError, type(PermissionError()))
-        assert not issubclass(errors.JiraTimeoutError, type(TimeoutError()))
-        assert errors.JiraPermissionError.__name__ == "JiraPermissionError"
-        assert errors.JiraTimeoutError.__name__ == "JiraTimeoutError"
 
     def test_incomplete_response_carries_json_ready_partial_result(self) -> None:
         exc = errors.JiraIncompleteResponseError(

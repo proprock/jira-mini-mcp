@@ -8,11 +8,19 @@ uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 uv run pytest
-uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
+uv run pytest -o addopts="" --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
 ```
 
+`uv run pytest` is the fast behavioral suite. Tests marked `hygiene`
+(documentation and tool-description contract checks) or `slow` (stdio
+subprocess) are excluded from it by `addopts`; `-o addopts=""` runs everything,
+which is what the coverage command and CI do.
+
 `uv run prek run --all-files` runs the fast subset (file hygiene, format check,
-lint, type check) through the commit hooks; it does not replace `pytest`.
+lint, type check, version-file agreement) through the commit hooks; it does not
+replace `pytest`. The `version-sync` hook runs `scripts/check_version_sync.py`
+only when `pyproject.toml`, `server.json`, `uv.lock`, or `CHANGELOG.md` changes;
+CI runs it on every push.
 
 Use `uv run ruff format .` to format; do not manually fight the formatter. Run
 all checks relevant to modified code and do not claim a check passed unless it
@@ -25,6 +33,32 @@ or pull-request summary. Coverage is an assessment tool, not a substitute for
 behavioral assertions. Do not introduce a repository-wide fail-under threshold
 until a justified baseline exists; add tests for relevant uncovered behavior or
 explain intentional exclusions.
+
+### Mutation check after a big feature
+
+Coverage shows that a line ran, not that a test would notice it changing. After
+a large new feature or module -- a new tool, a new module under `src/`, or a
+rework of normalization or pagination -- run a mutation check on the touched
+modules and put the surviving mutants in the pull-request summary: add an
+assertion for each one that matters, and name the ones that are equivalent.
+It is slow and is not a CI gate or a requirement for small changes.
+
+```bash
+uv run --with mutmut==3.8.0 mutmut run
+```
+
+The target modules are configured under `[tool.mutmut]` in `pyproject.toml`
+(`jira.py` and `models.py`; extend `source_paths`/`do_not_mutate` for a new
+module). `mutmut` is not a project dependency and needs Linux, macOS, or WSL --
+it does not run natively on Windows -- so on Windows copy the checkout into WSL
+first. `make mutation` wraps the command. A full run over the two modules is
+about 3,500 mutants and takes roughly 7 minutes on 4 cores; `mutmut results`
+lists the survivors and `mutmut show <name>` prints the change.
+
+Survivors that only alter message wording, the `operation=`/`issue_key=`
+metadata of an error, or a fallback the code documents as moot are usually
+equivalent for the tests; a survivor that changes a comparison, a boundary, or
+a sort key is a missing assertion.
 
 ## Test requirements
 
@@ -171,5 +205,6 @@ question about the model.
 Implementation matches the request; public schemas remain intentional; relevant
 edge cases are covered; formatting, linting, type checking, and tests pass; no
 sensitive data was introduced; fixtures trace to sanitized test-site evidence;
-coverage was reviewed and reported; and documentation changes with public
-behavior.
+coverage was reviewed and reported; after a big new feature or module, the
+mutation check above was run and its survivors reported; and documentation
+changes with public behavior.
