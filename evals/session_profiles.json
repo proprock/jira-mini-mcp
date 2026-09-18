@@ -1,0 +1,90 @@
+{
+  "provenance": "Sizes come from aggregate statistics (counts, lengths, byte sizes; no keys, names, or text) read on 2026-09-18 from a non-production Jira Cloud test site: every ticket of one assignee (351 of 365 read successfully) for the typical shape, and the 99 of them with 30 or more comments for the old-ticket shape. Every value below is rounded and synthetic. resume_work's comment counts (the size of a `since` window) were not observed and are hand-authored.",
+  "value_forms": "A number is a constant. [lo, hi] is a range whose typical value is the rounded-up midpoint. [lo, typical, hi] carries an observed low/median/high; for sizes that is the p10/median/p90 band.",
+  "defaults": {
+    "comments": [4, 15, 56],
+    "changelog_events": [23, 64, 177],
+    "attachments": [0, 4, 22],
+    "attachment_bytes": [11800, 57600, 191500],
+    "description_chars": [200, 630, 1600],
+    "comment_chars": [44, 153, 557]
+  },
+  "profiles": {
+    "fresh_ticket": {
+      "title": "A. Fresh ticket: read it, look at its files, report back",
+      "data": {
+        "comments": [4, 15, 56],
+        "changelog_events": [23, 64, 177],
+        "attachments": [0, 4, 22],
+        "attachment_bytes": [11800, 57600, 191500],
+        "description_chars": [200, 630, 1600],
+        "comment_chars": [44, 153, 557]
+      },
+      "calls": [
+        {"tool": "get_issue", "count": 1},
+        {"tool": "get_comments", "count": 1},
+        {"tool": "get_attachments", "count": 1},
+        {"tool": "download_attachment", "count": 1},
+        {"tool": "add_comment", "count": 1},
+        {"tool": "transition_issue", "count": 1}
+      ]
+    },
+    "old_ticket": {
+      "title": "B. Old ticket: long discussion and history",
+      "data": {
+        "comments": [32, 44, 120],
+        "changelog_events": [86, 148, 370],
+        "attachments": [4, 15, 45],
+        "attachment_bytes": [12300, 58200, 197300],
+        "description_chars": [310, 760, 1990],
+        "comment_chars": [49, 166, 632]
+      },
+      "calls": [
+        {"tool": "get_issue", "count": 1},
+        {"tool": "get_comments", "count": [2, 3]},
+        {"tool": "get_attachments", "count": 1},
+        {"tool": "download_attachment", "count": [1, 2]},
+        {"tool": "get_changelog", "count": 1},
+        {"tool": "add_comment", "count": 1},
+        {"tool": "transition_issue", "count": 1}
+      ]
+    },
+    "resume_work": {
+      "title": "C. Resume after recent work: only what changed since last session",
+      "data": {
+        "comments": [0, 2, 6],
+        "changelog_events": [23, 64, 177],
+        "attachments": [0, 4, 22],
+        "attachment_bytes": [11800, 57600, 191500],
+        "description_chars": [200, 630, 1600],
+        "comment_chars": [44, 153, 557]
+      },
+      "calls": [
+        {"tool": "get_issue", "count": 1},
+        {
+          "tool": "get_comments",
+          "count": 1,
+          "arguments": {"issue_key": "SYN-142", "since": "2026-09-17T00:00:00Z"}
+        },
+        {"tool": "get_attachments", "count": [0, 1]},
+        {"tool": "add_comment", "count": 1},
+        {"tool": "transition_issue", "count": [0, 1]}
+      ]
+    },
+    "discovery": {
+      "title": "D. Discovery: search, then open the candidates",
+      "data": {
+        "comments": [4, 15, 56],
+        "changelog_events": [23, 64, 177],
+        "attachments": [0, 4, 22],
+        "attachment_bytes": [11800, 57600, 191500],
+        "description_chars": [200, 630, 1600],
+        "comment_chars": [44, 153, 557]
+      },
+      "calls": [
+        {"tool": "search_issues", "count": [1, 3]},
+        {"tool": "get_issue", "count": [1, 3]}
+      ]
+    }
+  }
+}
