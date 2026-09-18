@@ -384,7 +384,7 @@ wheels = [
 
 [[package]]
 name = "jira-mini-mcp"
-version = "0.9.3"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx2" },

@@ -7,13 +7,13 @@
     "url": "https://github.com/proprock/jira-mini-mcp",
     "source": "github"
   },
-  "version": "0.9.3",
+  "version": "1.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "jira-mini-mcp",
-      "version": "0.9.3",
+      "version": "1.0.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

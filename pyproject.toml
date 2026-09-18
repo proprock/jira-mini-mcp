@@ -1,6 +1,6 @@
 [project]
 name = "jira-mini-mcp"
-version = "0.9.3"
+version = "1.0.0"
 description = "Minimal Jira Cloud MCP server for coding agents"
 readme = "README.md"
 license = "MIT"
