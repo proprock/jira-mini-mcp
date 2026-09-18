@@ -14,9 +14,11 @@ deciding what *not* to add. Read [Scope](#scope) before opening a pull request.
   and maintainer approval first, so open an issue before writing code.
 - A new or changed tool is a public API change. It gets a contract in
   [PROJECT-CONTRACTS.md](PROJECT-CONTRACTS.md) before it is implemented.
-- Configuration is `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, plus the
-  optional `READ_ONLY_MODE` and `DISABLE_STRUCTURED_OUTPUT`. A further setting
-  needs maintainer approval.
+- Configuration is `JIRA_BASE_URL` plus either `JIRA_EMAIL` and
+  `JIRA_API_TOKEN` or, with `JIRA_AUTH_METHOD=oauth`, `JIRA_OAUTH_CLIENT_ID` and
+  `JIRA_OAUTH_CLIENT_SECRET`; the optional settings are `JIRA_AUTH_METHOD`,
+  `READ_ONLY_MODE`, and `DISABLE_STRUCTURED_OUTPUT`. A further setting needs
+  maintainer approval.
 
 Agent-assisted contributions follow the same rules; the repository's
 [AGENTS.md](AGENTS.md) lists them and links the detail documents.

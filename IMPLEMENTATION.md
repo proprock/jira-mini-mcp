@@ -8,7 +8,8 @@ FastMCP, FastAPI, aiohttp, requests, curl_cffi, or another framework/client
 without a demonstrated requirement.
 
 Target Jira Cloud REST API v3 only. Do not add Jira Server/Data Center endpoint
-selection, PAT/Bearer authentication, or OAuth in the MVP.
+selection or PAT/Bearer authentication. OAuth 2.0 (3LO) is supported with an app
+the user registers; see `oauth.py`.
 
 Prefer a standard structure:
 
@@ -18,6 +19,7 @@ src/jira_mini_mcp/
   server.py
   jira.py
   auth.py
+  oauth.py
   models.py
   errors.py
 tests/
@@ -55,11 +57,21 @@ the last response maps to, unchanged.
 
 ## Configuration, authentication, and errors
 
-Load exactly `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` from the
-environment supplied by the MCP host. Keep them in one immutable configuration
-object, validate all three at startup, and use Jira Cloud Basic authentication.
-The base URL is configuration, not part of the authentication provider's return
-value. Do not expose additional public settings for the attachment cache.
+`auth.py` loads the credentials `JIRA_AUTH_METHOD` selects from the environment
+supplied by the MCP host into one immutable object -- `JiraConfig` (base URL,
+email, API token; Basic auth) or `OAuthConfig` (base URL, client ID, secret) --
+and validates them at startup. `oauth.py` owns everything OAuth: the token file,
+`OAuthSession` (fresh token and API-gateway URL, one `asyncio.Lock` around
+refresh), `OAuthBearerAuth` (an `httpx2.Auth` that replays once after a 401), and
+the `login` flow. `server.py` picks the auth in `_build_jira_client` and owns the
+`login`/`logout` subcommands.
+
+`JiraClient` takes any `httpx2.Auth` and either the site URL or an async
+provider of the API-gateway URL, resolved per request so a server started
+before `login` picks it up. It never learns which method is active beyond that
+and the 401 hint. Token-endpoint calls reuse the one shared `AsyncClient`. Do
+not expose additional public settings for the attachment cache or the token
+file location.
 
 Keep the tenant URL out of every log, including a library's. `httpx2` logs each
 request line at INFO, so the process entry point raises that logger's level

@@ -35,7 +35,8 @@ There is no fixed patch deadline; severity decides the order of work.
 
 Problems in this server's own code, such as:
 
-- a Jira URL, credential, authorization header, cloud ID, or raw response body
+- a Jira URL, credential, OAuth token, authorization header, cloud ID, or raw
+  response body
   reaching a log, a startup message, or a model-visible error;
 - `READ_ONLY_MODE` failing to withhold a state-changing tool;
 - a download escaping the temporary attachment cache, through a filename,
@@ -47,8 +48,8 @@ Problems in this server's own code, such as:
 
 - Vulnerabilities in Jira, Atlassian services, or third-party dependencies
   (report those upstream).
-- An attacker who already holds the API token or controls the host that runs
-  the server.
+- An attacker who already holds the API token or the OAuth token file, or
+  controls the host that runs the server.
 - What the token's own account is allowed to do; this server never widens or
   narrows Jira permissions.
 - Prompt injection carried in Jira content. Ticket text, comments, and
@@ -61,7 +62,13 @@ Problems in this server's own code, such as:
   job needs.
 - Set `READ_ONLY_MODE=true` when the agent does not need to write; the three
   write tools are then never registered.
-- Keep `JIRA_API_TOKEN` in the host's own configuration. Never commit it or a
-  `.env` file, and rotate the token at once if it is exposed.
+- Keep `JIRA_API_TOKEN` or `JIRA_OAUTH_CLIENT_SECRET` in the host's own
+  configuration. Never commit either or a `.env` file, and rotate a token or
+  secret at once if it is exposed.
+- With `JIRA_AUTH_METHOD=oauth`, the OAuth token file under
+  `%APPDATA%\jira-mini-mcp\` or `~/.config/jira-mini-mcp/` is a credential:
+  it is written user-readable only on POSIX, and should never be copied or
+  committed. `jira-mini-mcp logout` deletes it; revoking the app under
+  Connected apps in your Atlassian account invalidates its tokens.
 - Use a non-production Jira site for development and testing, and never commit
   raw Jira responses; see [CONTRIBUTING.md](CONTRIBUTING.md).

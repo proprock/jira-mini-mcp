@@ -7,13 +7,13 @@
     "url": "https://github.com/proprock/jira-mini-mcp",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "jira-mini-mcp",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -26,21 +26,46 @@
           "format": "string"
         },
         {
+          "name": "JIRA_AUTH_METHOD",
+          "description": "api_token (default) or oauth; oauth needs an OAuth 2.0 (3LO) app and a one-time `jira-mini-mcp login`",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
           "name": "JIRA_EMAIL",
-          "description": "The email your Jira API token belongs to",
-          "isRequired": true,
+          "description": "The email your Jira API token belongs to (JIRA_AUTH_METHOD=api_token)",
+          "isRequired": false,
           "format": "string"
         },
         {
           "name": "JIRA_API_TOKEN",
-          "description": "A Jira Cloud API token",
-          "isRequired": true,
+          "description": "A Jira Cloud API token (JIRA_AUTH_METHOD=api_token)",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "JIRA_OAUTH_CLIENT_ID",
+          "description": "Client ID of your OAuth 2.0 (3LO) app (JIRA_AUTH_METHOD=oauth)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "JIRA_OAUTH_CLIENT_SECRET",
+          "description": "Secret of your OAuth 2.0 (3LO) app (JIRA_AUTH_METHOD=oauth)",
+          "isRequired": false,
           "isSecret": true,
           "format": "string"
         },
         {
           "name": "READ_ONLY_MODE",
           "description": "Set to true, 1, or on to register only the six read tools and withhold the three write tools",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "DISABLE_STRUCTURED_OUTPUT",
+          "description": "Comma-separated tool names that return content only, without structuredContent",
           "isRequired": false,
           "format": "string"
         }

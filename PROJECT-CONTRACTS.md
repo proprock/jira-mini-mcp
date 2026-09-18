@@ -7,7 +7,8 @@ targets Jira Cloud REST API v3 only and is optimized for large issue histories,
 inexpensive recent-activity retrieval, explicit pagination, low runtime
 overhead, and direct installation from GitHub.
 
-Non-goals are Jira Server/Data Center compatibility, OAuth, issue creation,
+Non-goals are Jira Server/Data Center compatibility, PAT/Bearer tokens, a
+server-owned (shared) OAuth client, issue creation,
 issue links, attachment upload, comment editing or deletion, worklogs, sprint or
 board management, Jira administration, and Confluence integration.
 
@@ -386,7 +387,12 @@ camelCase field name.
 
 ## Configuration
 
-The MVP has exactly three required setup values:
+`JIRA_AUTH_METHOD` selects how the server authenticates. It is optional:
+`api_token` (the default when absent or empty) or `oauth`, case-insensitive,
+surrounding whitespace ignored. Any other value is a startup `ConfigError` naming
+the value received and both accepted values.
+
+With `api_token`, exactly three setup values are required:
 
 ```text
 JIRA_BASE_URL
@@ -394,11 +400,45 @@ JIRA_EMAIL
 JIRA_API_TOKEN
 ```
 
-Use Jira Cloud Basic authentication with the email and API token. Do not expose
-Bearer/PAT or OAuth configuration in the MVP.
+and the server uses Jira Cloud Basic authentication with the email and API
+token against `JIRA_BASE_URL`.
 
-`READ_ONLY_MODE` is an optional fourth value and the only one that is not a
-credential. It restricts tool registration to the tools annotated
+With `oauth`, exactly three setup values are required instead:
+
+```text
+JIRA_BASE_URL
+JIRA_OAUTH_CLIENT_ID
+JIRA_OAUTH_CLIENT_SECRET
+```
+
+The client ID and secret belong to an OAuth 2.0 (3LO) app the user registers;
+Atlassian accepts only confidential clients, so the project never ships one.
+Authorization is a separate one-time command, `jira-mini-mcp login [--port N]`
+(default port `8765`), running the authorization-code flow with PKCE (S256), a
+`state` check, and a loopback callback at `http://localhost:<port>/callback`. It
+requests `read:jira-work write:jira-work read:jira-user offline_access`, resolves
+the cloud ID whose site matches `JIRA_BASE_URL` through `accessible-resources`,
+and refuses to save an authorization lacking one of the first three scopes.
+`jira-mini-mcp logout` deletes the stored authorization. Both commands print
+only to stderr, exit non-zero on failure, and require `JIRA_AUTH_METHOD=oauth`.
+
+Tokens live in one file per client ID and site, named by a hash of both, under
+`%APPDATA%\jira-mini-mcp\` on Windows and `$XDG_CONFIG_HOME/jira-mini-mcp/` or
+`~/.config/jira-mini-mcp/` elsewhere; it is written atomically and, on POSIX,
+with mode `0600`. The server starts without it; every tool call then fails with a
+`JiraAuthenticationError` telling the user to run `login`. With it, requests go
+to `https://api.atlassian.com/ex/jira/{cloud_id}` with a Bearer token, and
+`download_attachment` fetches `/rest/api/3/attachment/content/{id}` through that
+gateway. The server refreshes the access token 60 seconds before expiry and once
+after a 401, persists each rotated refresh token, and reuses tokens another
+process already rotated. A 401 message names `JIRA_EMAIL` and `JIRA_API_TOKEN`
+in `api_token` mode and `jira-mini-mcp login` in `oauth` mode. Tokens, the client
+secret, the cloud ID, and token-endpoint bodies never appear in an error or
+output. `oauth` mode writes one line to stderr at startup naming the mode.
+
+The tool contracts are identical under both methods.
+
+`READ_ONLY_MODE` is optional and not a credential. It restricts tool registration to the tools annotated
 `readOnlyHint`, so an operator can withhold state-changing tools without
 building a second server or maintaining a client-side allowlist:
 
@@ -412,13 +452,13 @@ whitespace is ignored and the comparison is case-insensitive. Any other value is
 a startup `ConfigError` naming the variable, the value received, and the accepted
 spellings — never a silent fallback, because ignoring a typo here would register
 tools an operator believed they had withheld. The switch selects MCP tool
-registration, not Jira access: it is parsed beside the three credentials rather
-than inside `JiraConfig`, and `JiraClient` is unaware of it. It does not grant or
+registration, not Jira access: it is parsed beside the credentials rather
+than inside the credential configuration, and `JiraClient` is unaware of it. It does not grant or
 revoke any Jira permission; the API token's own account permissions still apply.
 Enabling it writes one line to stderr at startup naming the mode, and never a
 configured value.
 
-`DISABLE_STRUCTURED_OUTPUT` is an optional fifth value, also not a credential.
+`DISABLE_STRUCTURED_OUTPUT` is optional and also not a credential.
 It names tools, comma-separated, that should return `content` only and skip
 `structuredContent`/`outputSchema` entirely:
 
@@ -435,7 +475,7 @@ valid tool name — never a silent no-op, because a typo here would leave an
 operator believing a tool's payload was no longer duplicated when it still
 is. This switch controls MCP response shape only: a named tool's `content`
 JSON is byte-for-byte identical whether or not it is named here, it is
-parsed beside the three credentials rather than inside `JiraConfig`, and
+parsed beside the credentials rather than inside the credential configuration, and
 `JiraClient` is unaware of it. It prints no startup announcement, unlike
 `READ_ONLY_MODE`, since it changes response shape rather than which
 capabilities an agent has.

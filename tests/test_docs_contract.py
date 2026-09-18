@@ -1,5 +1,6 @@
 """Automated comparison: the six tools, and their default fields, as actually
-registered in server.py/jira.py must match PROJECT-CONTRACTS.md and README.md.
+registered in server.py/jira.py must match PROJECT-CONTRACTS.md and docs/tools.md,
+and every setting the server reads must be documented.
 
 This does not replace human review of prose -- it catches the concrete,
 regression-prone drift: a tool renamed/added/removed, or a default field list
@@ -8,6 +9,7 @@ edited in code without updating the two documents that promise it publicly.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -20,6 +22,20 @@ pytestmark = [pytest.mark.anyio, pytest.mark.hygiene]
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CONTRACTS = (ROOT / "PROJECT-CONTRACTS.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+TOOLS_DOC = (ROOT / "docs" / "tools.md").read_text(encoding="utf-8")
+CONFIGURATION_DOC = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+SERVER_JSON = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+
+SETTINGS = (
+    "JIRA_BASE_URL",
+    "JIRA_AUTH_METHOD",
+    "JIRA_EMAIL",
+    "JIRA_API_TOKEN",
+    "JIRA_OAUTH_CLIENT_ID",
+    "JIRA_OAUTH_CLIENT_SECRET",
+    "READ_ONLY_MODE",
+    "DISABLE_STRUCTURED_OUTPUT",
+)
 
 TOOL_NAMES = frozenset(
     {
@@ -67,11 +83,36 @@ def test_issue_default_fields_match_project_contracts() -> None:
     assert _csv_fields(block) == ISSUE_DEFAULT_FIELDS
 
 
-def test_search_default_fields_match_readme() -> None:
-    block = _fenced_block_after(README, "defaults to these seven fields:")
+def test_search_default_fields_match_tools_doc() -> None:
+    block = _fenced_block_after(TOOLS_DOC, "defaults to these seven fields:")
     assert _csv_fields(block) == SEARCH_DEFAULT_FIELDS
 
 
-def test_issue_default_fields_match_readme() -> None:
-    block = _fenced_block_after(README, "defaults to these sixteen fields:")
+def test_issue_default_fields_match_tools_doc() -> None:
+    block = _fenced_block_after(TOOLS_DOC, "defaults to these sixteen fields:")
     assert _csv_fields(block) == ISSUE_DEFAULT_FIELDS
+
+
+def test_settings_read_by_the_server_are_the_documented_ones() -> None:
+    source = (ROOT / "src" / "jira_mini_mcp" / "auth.py").read_text(encoding="utf-8")
+    read = set(re.findall(r'"((?:JIRA|READ|DISABLE)_[A-Z_]+)"', source))
+    assert read == set(SETTINGS)
+
+
+@pytest.mark.parametrize("setting", SETTINGS)
+def test_every_setting_is_in_the_configuration_doc_and_server_json(setting: str) -> None:
+    assert f"| `{setting}` |" in CONFIGURATION_DOC
+    registry_names = {
+        variable["name"]
+        for package in SERVER_JSON["packages"]
+        for variable in package.get("environmentVariables", [])
+    }
+    assert setting in registry_names
+
+
+def test_readme_links_into_docs_resolve() -> None:
+    prefix = "https://github.com/proprock/jira-mini-mcp/blob/master/"
+    targets = set(re.findall(re.escape(prefix) + r"([\w./-]+?)(?:#[\w-]+)?\)", README))
+    assert {"docs/configuration.md", "docs/oauth.md", "docs/tools.md"} <= targets
+    for target in targets:
+        assert (ROOT / target).exists(), target

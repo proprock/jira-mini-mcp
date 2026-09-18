@@ -7,6 +7,28 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-19
+
+### Added
+
+- `JIRA_AUTH_METHOD`, an optional setting choosing `api_token` (the default,
+  so existing configurations are unchanged) or `oauth`. With `oauth` the server
+  authenticates through the user's own OAuth 2.0 (3LO) app, configured with
+  `JIRA_OAUTH_CLIENT_ID` and `JIRA_OAUTH_CLIENT_SECRET` instead of
+  `JIRA_EMAIL` and `JIRA_API_TOKEN`; an unrecognized value stops startup.
+- `jira-mini-mcp login [--port N]` authorizes in the browser (PKCE, loopback
+  callback on `http://localhost:8765/callback` by default) and stores the tokens
+  in a user-only file; `jira-mini-mcp logout` deletes it. The server refreshes
+  the access token itself, persists each rotated refresh token, and, until
+  `login` has run, answers every tool call with an error saying to run it.
+- A 401 in `oauth` mode tells the caller to run `jira-mini-mcp login` rather
+  than to check `JIRA_EMAIL` and `JIRA_API_TOKEN`.
+
+### Changed
+
+- The `repr` of the loaded configuration no longer includes the email or API
+  token.
+
 ## [1.0.0] - 2026-09-18
 
 ### Added
@@ -96,7 +118,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.3...v1.0.0
 [0.9.3]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.1...v0.9.2
