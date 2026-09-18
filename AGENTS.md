@@ -72,6 +72,9 @@ suitable for direct installation from GitHub.
   requests, the changelog, releases, and GitHub Actions.
 - [AGENT-WORKFLOW.md](AGENT-WORKFLOW.md) — task routing, ownership,
   delegation, and development principles.
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) — the
+  human-facing contributor guide (setup, commit hooks, release model) and
+  vulnerability policy; keep them consistent with the documents above.
 
 Read every linked document relevant to the files or public behavior you will
 change. For a small mechanical documentation-only edit, this file and the

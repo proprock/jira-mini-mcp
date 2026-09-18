@@ -27,14 +27,25 @@ one costs context before the agent does any useful work, and every near-duplicat
 makes the agent's choice less certain. This server gives a coding agent the Jira
 context it needs for a ticket, the three ways to answer back, and nothing else.
 
-- **6-9 tools, not 98** - every one earns its place in context; see
+- **6-9 tools, not 98** - every one earns its place in context, and the
+  descriptions are tested so an agent picks the right one; see
   [why so few](#why-so-few-tools) and how it's [compared with the
   alternatives](#compared-with-the-alternatives).
-- **Read-only mode built in** - set one variable and the three write tools
-  never register, not even as a disabled entry the agent can see.
+- **A write surface of exactly three tools** - comment, transition, update.
+  Set `READ_ONLY_MODE=true` and they never register, not even as a disabled
+  entry the agent can see.
 - **Compact, predictable output** - stable JSON schemas, Markdown for rich
-  text, no `null` spam, no second human-readable rendering of the same
-  result; see [what the tools return](#what-the-tools-return).
+  text, no `null` spam, no `self` URLs, emails, or avatars; see
+  [what the tools return](#what-the-tools-return).
+- **Up to ~40% less output on the wire** - turn off the duplicated
+  `structuredContent` per tool with `DISABLE_STRUCTURED_OUTPUT`; the model still
+  gets the same JSON. See [Cheaper output](#cheaper-output).
+- **Nothing is silently cut short** - exact totals on comments and changelog,
+  cursor paging on search, and `limit=0` to fetch the rest. A failed request is
+  an error, never an empty list.
+- **Errors an agent can act on** - a wrong transition name lists every valid
+  transition and where it leads, so there is no separate discovery tool. Errors
+  never contain your Jira URL, credentials, or raw response bodies.
 - **On PyPI** - `uvx jira-mini-mcp` or `pip install jira-mini-mcp`, no repo
   clone or git URL required.
 
@@ -56,13 +67,13 @@ context it needs for a ticket, the three ways to answer back, and nothing else.
 
 - [Install](#install)
 - [Configure](#configure)
+- [Cheaper output: `DISABLE_STRUCTURED_OUTPUT`](#cheaper-output)
 - [What the tools return](#what-the-tools-return)
 - [Writing to Jira](#writing-to-jira)
 - [Examples](#examples)
 - [Why so few tools](#why-so-few-tools)
 - [Compared with the alternatives](#compared-with-the-alternatives)
-- [Development](#development)
-- [Release model](#release-model)
+- [Contributing and security](#contributing-and-security)
 
 ## Install
 
@@ -76,7 +87,7 @@ or
 pip install jira-mini-mcp
 ```
 
-Pin a version when you want a fixed surface: `uvx jira-mini-mcp==0.9.0`.
+Pin a version when you want a fixed surface: `uvx jira-mini-mcp==1.0.0`.
 
 Running an unreleased commit straight from GitHub also works:
 
@@ -96,7 +107,7 @@ Three required values, and two optional switches:
 | `JIRA_EMAIL` | yes | The email your API token belongs to |
 | `JIRA_API_TOKEN` | yes | A [Jira Cloud API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
 | `READ_ONLY_MODE` | no | `true`, `1`, `on` registers only the six read tools |
-| `DISABLE_STRUCTURED_OUTPUT` | no | Comma-separated tool names that return `content` only, skipping `structuredContent` |
+| `DISABLE_STRUCTURED_OUTPUT` | no | Comma-separated tool names that return `content` only, skipping `structuredContent`; see [Cheaper output](#cheaper-output) |
 
 Authentication is Jira Cloud Basic auth with the email and token. Jira
 Server/Data Center, PAT/Bearer, and OAuth are not supported. Configuration is
@@ -161,10 +172,54 @@ Add `READ_ONLY_MODE=true` to withhold the write tools.
 
 </details>
 
+## Cheaper output
+
+By default every tool returns its result twice, as the MCP spec asks: the JSON
+as text in `content`, and the same JSON as `structuredContent`, plus an
+`outputSchema` advertised for each tool. A host that forwards both copies to the
+model pays for the same data twice. `DISABLE_STRUCTURED_OUTPUT` names the tools
+that should return `content` only:
+
+```text
+DISABLE_STRUCTURED_OUTPUT=search_issues,get_issue,get_comments,get_changelog
+```
+
+An empty or absent value changes nothing. A name that is not one of the nine
+tools stops startup and lists the valid ones, so a typo never leaves you
+believing a payload shrank when it did not.
+
+**What it saves.** `evals/structured_output_savings.py` measures the exact result
+this server sends in both modes. Across replayed agent sessions on synthetic
+tickets it cuts the `CallToolResult` by about 35-40% (36.6% for a weighted mix of
+all nine tools), and by 42-43% on real tickets from a non-production site. The
+largest read tools gain the most: `get_comments` about 42%, `get_issue` about
+41%, `search_issues` about 35%. Two caveats: these are bytes on the wire, not
+billed tokens, and they only matter where the host actually sends both copies to
+the model. Run the script for your own numbers; see
+[`evals/README.md`](evals/README.md).
+
+**Why it is safe for agent work.**
+
+- `content` carries the *same* compact JSON, byte for byte, whether or not a tool
+  is named. A model reads that text either way and sees the same fields,
+  Markdown, timestamps, and pagination values.
+- Nothing about the contract changes: arguments, defaults, pagination, and error
+  behavior are identical. Errors were always text-only, with the sanitized
+  partial result inline, so failure handling is unaffected.
+- What you give up is the machine-checkable `outputSchema` and typed
+  `structuredContent`, which only a programmatic client that validates or
+  parses results in code makes use of. A coding agent that reads tool output
+  as text does not.
+
+Turn it off for the large read tools, where the saving is real. Leave it on for a
+tool whose result a host or pipeline consumes as typed data.
+
 ## What the tools return
 
 Structured JSON with stable output schemas, and no second human-readable
-rendering of the same result. Jira's rich text becomes Markdown inside the
+rendering of the same result (the JSON is sent as text and as
+`structuredContent`; see [Cheaper output](#cheaper-output) to send it once).
+Jira's rich text becomes Markdown inside the
 corresponding string field. Timestamps normalize to UTC ISO-8601 with a `Z`.
 Users are `account_id` and `display_name` only - no email, avatar, or `self` URL.
 Known resources use compact shapes:
@@ -283,63 +338,89 @@ and `idempotentHint` values, which is what `READ_ONLY_MODE` filters on.
 
 ## Examples
 
-Requests an agent might send, each demonstrating one feature from the
-sections above.
+Prompts you might give an agent, and the calls the tools make possible. Each one
+leans on a feature that a generic Jira tool does not have. Issue keys and
+values are placeholders.
 
-**Trim a response to just the fields you need:**
-
-```text
-get_issue(issue_key="PROJ-123", fields=["status", "assignee"])
--> {"key": "PROJ-123", "status": {...}, "assignee": {...}}
-```
-
-`fields=[]` returns the key alone; an omitted `fields` falls back to the
-sixteen-field default.
-
-**Search with JQL, then page through the cursor:**
+**"Summarize PROJ-123: status, owner, and what happened this week."**
+Ask for only what the summary needs, and load only the recent discussion.
 
 ```text
-search_issues(jql='project = PROJ AND status = "In Progress" ORDER BY updated DESC', limit=10)
--> {"items": [...], "next_page_token": "eyJ..."}
-
-search_issues(jql='project = PROJ AND status = "In Progress" ORDER BY updated DESC', page_token="eyJ...")
--> {"items": [...], "next_page_token": null}   # null token, last page
-```
-
-**"What happened since the last release" - comments filtered by date, not by count:**
-
-```text
-get_comments(issue_key="PROJ-123", since="2026-09-01T00:00:00Z", order="asc", limit=0)
+get_issue(issue_key="PROJ-123", fields=["summary", "status", "assignee"])
+get_comments(issue_key="PROJ-123", since="2026-09-14T00:00:00Z", order="asc", limit=0)
 -> {"start_at": 0, "total": 4, "items": [...]}   # every comment since the timestamp
 ```
 
-`since` takes an ISO-8601 timestamp with an explicit offset; `limit=0` lifts
-the 20-item default so the agent doesn't have to guess how many there are.
+`fields` replaces the default set entirely, so nothing extra is fetched.
+`since` is applied before ordering and slicing, so a multi-year discussion is
+never loaded to find last week's replies.
 
-**The full changelog, not a 20-item page of it:**
+**"Why did PROJ-123 go to Blocked, and who moved it?"**
+The changelog is field-change history with an exact total, newest first.
 
 ```text
-get_changelog(issue_key="PROJ-123", limit=0)
--> {"start_at": 0, "total": 37, "items": [...]}   # all 37 entries
+get_changelog(issue_key="PROJ-123", limit=5)
+-> {"start_at": 0, "total": 37, "items": [...]}   # the five latest changes of 37
 ```
 
-**Resolve a workflow transition by name, not id, and close the loop with a comment:**
+If those five do not reach the cause, `start_at=5` continues from there, or
+`limit=0` returns everything remaining. Nothing is truncated without saying so.
+
+**"Find my open bugs in PROJ, most recently updated first, and open the top three."**
+Search is cursor-based and returns compact rows; the agent opens only what it
+needs.
+
+```text
+search_issues(jql='project = PROJ AND type = Bug AND assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC', limit=10)
+-> {"items": [...], "next_page_token": "eyJ..."}   # null token means the last page
+get_issue(issue_key="PROJ-201")
+```
+
+**"Who is watching PROJ-123, and has anyone voted?"**
+Jira only returns a link and a count for these. Naming them resolves them to
+people.
+
+```text
+get_issue(issue_key="PROJ-123", fields=["watches", "votes"])
+-> {"key": "PROJ-123", "fields": {"watches": {"watch_count": 2, "is_watching": false, "watchers": [...]}, "votes": {...}}}
+```
+
+**"There is a log attached to PROJ-123. What does it say?"**
+Metadata first, the file only when it matters.
+
+```text
+get_attachments(issue_key="PROJ-123")
+download_attachment(attachment_id="10042")
+-> a local path in a managed temporary cache, removed at shutdown
+```
+
+**"The fix is merged. Move PROJ-123 to Done and say so."**
+Transitions are matched by name, and a wrong name explains itself.
 
 ```text
 transition_issue(issue_key="PROJ-123", to="Done", comment="Fixed in the linked PR")
 ```
 
-An unrecognized `to` value lists every transition available from the issue's
-current status and where each one leads.
+If `Done` matches nothing, the error lists every transition available from the
+issue's current status and the status each one reaches, so the agent corrects
+itself without a separate lookup tool. `to` matches a transition name or a
+status name, ignoring case; prefer the transition name.
 
-**Update fields and reassign in one call (needs `READ_ONLY_MODE` unset or false):**
+**"Assign PROJ-123 to me and add the label `needs-review`, keeping the existing labels."**
+`labels` is replaced wholesale, so the agent reads first, then writes the full
+list.
 
 ```text
-update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["needs-review"]})
+get_issue(issue_key="PROJ-123", fields=["labels"])
+update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["backend", "needs-review"]})
 ```
 
-`labels` and `components` are replaced wholesale - read the issue first if the
-intent is to add one value rather than overwrite the list.
+`assignee` accepts `"me"`. `description` takes Markdown, which is converted to
+Jira rich text.
+
+**Same prompts, no write access.** With `READ_ONLY_MODE=true` the server
+registers only the six read tools. An agent asked to comment or transition has
+no such tool to call, rather than a tool that refuses.
 
 ## Why so few tools
 
@@ -390,60 +471,13 @@ Server/Data Center, or simply broader Jira coverage than six to nine tools.
 a Jira ticket, where the context every tool definition costs is worth more than
 the coverage it buys.
 
-## Development
+## Contributing and security
 
-```bash
-uv sync
-uv run ruff format --check .
-uv run ruff check .
-uv run ty check
-uv run pytest
-uv run pytest --cov=jira_mini_mcp --cov-branch --cov-report=term-missing
-```
-
-`uv run ruff format .` applies formatting. The last command reports statement and
-branch coverage with missing lines; it is reviewed before closing each phase, and
-the project deliberately has no fail-under percentage until a meaningful baseline
-exists.
-
-On macOS/Linux (and CI), a `Makefile` wraps the same commands: `make check` runs
-the full sequence in order, stopping on the first failure; `make help` lists every
-target. It is a convenience wrapper only, not a second source of truth -- Windows
-contributors run the commands above directly, since this repo's dev machine is
-Windows without GNU Make on `PATH` by default.
-
-The default suite is fully offline. HTTP mocks trace to observations against a
-real Jira Cloud site, but raw responses are never committed: each fixture keeps
-the observed structure while every tenant, account, issue, cursor, timestamp, and
-content value is synthetic, and records its own provenance. Write endpoints are
-exercised only against a disposable issue.
-
-The tool-selection eval needs a model credential and spends money, so it is run
-deliberately:
-
-```bash
-uv run python evals/run_eval.py
-```
-
-Architecture:
-
-```text
-agent -> stdio -> MCPServer -> JiraClient -> httpx2.AsyncClient -> Jira REST v3
-```
-
-One asynchronous HTTP client is reused for the process lifetime, with an explicit
-timeout and bounded retries - a 429 is retried for any method, a 5xx or a dropped
-connection only for methods that converge on replay, never a POST. `JiraClient`
-knows nothing about MCP; the tools are thin adapters over it.
-
-## Release model
-
-Semantic versioning, Conventional Commits, short-lived branches, pull-request CI,
-and tagged releases. [CHANGELOG.md](CHANGELOG.md) records what changed for
-someone running the server. Each tag is a GitHub Release with CI-checked wheel
-and source distributions attached, and is published to
-[PyPI](https://pypi.org/project/jira-mini-mcp/) over GitHub Actions Trusted
-Publishing (OIDC) - no long-lived credential to manage.
+Setup, checks, the test and eval commands, the branch and commit conventions,
+and the release model are in [CONTRIBUTING.md](CONTRIBUTING.md). Report
+vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Changes
+that affect someone running the server are recorded in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

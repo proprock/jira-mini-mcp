@@ -1,0 +1,39 @@
+# Fast commit-time checks. Works with both `pre-commit` and `prek`.
+#
+# The local hooks run the project's own locked toolchain through `uv run`, so
+# these checks, CI, and QUALITY.md all use one set of tool versions (uv.lock).
+# The full test suite is not a hook; run it as QUALITY.md describes.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check .
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check .
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: ty-check
+        name: ty check
+        entry: uv run ty check
+        language: system
+        types: [python]
+        pass_filenames: false
