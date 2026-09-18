@@ -2688,3 +2688,78 @@ class TestTieBreakIsTheClientsOwn:
         result = await getattr(_make_client(handler), method)("SYN-1", order=order)
 
         assert [item.id for item in result.items] == expected
+
+
+class _StubBearer(httpx2.Auth):
+    def auth_flow(self, request: httpx2.Request):  # type: ignore[override]
+        request.headers["Authorization"] = "Bearer synthetic-access"
+        yield request
+
+
+GATEWAY = "https://api.atlassian.com/ex/jira/00000000-0000-4000-8000-000000000001"
+
+
+def _gateway_client(handler: Handler, cache_dir: Path = Path(".")) -> JiraClient:
+    async def api_base() -> str:
+        return GATEWAY + "/"
+
+    http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    return JiraClient(
+        http_client, _StubBearer(), api_base, cache_dir, auth_hint=errors.OAUTH_AUTH_HINT
+    )
+
+
+class TestOAuthGateway:
+    async def test_requests_go_to_the_gateway_with_the_bearer(self) -> None:
+        handler, seen = _recording_handler(_json_response(200, {"issues": [], "isLast": True}))
+
+        await _gateway_client(handler).search_issues("project = SYN")
+
+        assert str(seen[0].url).startswith(f"{GATEWAY}/rest/api/3/search/jql")
+        assert seen[0].headers["Authorization"] == "Bearer synthetic-access"
+
+    async def test_401_names_login_instead_of_the_api_token(self) -> None:
+        handler, _ = _recording_handler(_json_response(401, {}))
+        with pytest.raises(errors.JiraAuthenticationError) as exc_info:
+            await _gateway_client(handler).search_issues("project = SYN")
+        assert "jira-mini-mcp login" in str(exc_info.value)
+        assert "JIRA_API_TOKEN" not in str(exc_info.value)
+
+    async def test_provider_failure_surfaces_before_any_request(self) -> None:
+        async def not_logged_in() -> str:
+            raise errors.JiraAuthenticationError("run login")
+
+        handler, seen = _recording_handler(_json_response(200, {}))
+        http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+        client = JiraClient(http_client, _StubBearer(), not_logged_in, Path("."))
+        with pytest.raises(errors.JiraAuthenticationError, match="run login"):
+            await client.get_issue("SYN-1")
+        assert seen == []
+
+    async def test_download_fetches_content_through_the_gateway(self, tmp_path: Path) -> None:
+        metadata = _synthetic_attachment("80001")
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if str(request.url) == f"{GATEWAY}/rest/api/3/attachment/80001":
+                return httpx2.Response(200, json=metadata)
+            if str(request.url) == f"{GATEWAY}/rest/api/3/attachment/content/80001":
+                return httpx2.Response(200, content=b"gateway bytes")
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        result = await _gateway_client(handler, tmp_path).download_attachment("80001")
+
+        assert Path(result.local_path).read_bytes() == b"gateway bytes"
+        assert all(r.headers["Authorization"] == "Bearer synthetic-access" for r in seen)
+
+    async def test_download_401_names_login(self, tmp_path: Path) -> None:
+        metadata = _synthetic_attachment("80001")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path.endswith("/attachment/80001"):
+                return httpx2.Response(200, json=metadata)
+            return httpx2.Response(401, json={})
+
+        with pytest.raises(errors.JiraAuthenticationError, match="jira-mini-mcp login"):
+            await _gateway_client(handler, tmp_path).download_attachment("80001")
