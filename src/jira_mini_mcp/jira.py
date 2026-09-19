@@ -185,11 +185,12 @@ def _joined_fields(fields: list[str] | None, default: tuple[str, ...]) -> str:
     return ",".join(fields)
 
 
-def _comment_sort_key(raw: Any) -> tuple[str, str]:
+def _created_id_sort_key(raw: Any) -> tuple[str, str]:
     """Best-effort `(created, id)` sort key for local tie-break resorting.
 
     An unparsable `created` or non-string `id` sorts as `""`: such a comment
-    gets dropped by `normalize_comment` anyway, so its position here is moot.
+    or changelog entry gets dropped by its normalizer anyway, so its position
+    here is moot.
     """
     if not isinstance(raw, dict):
         return ("", "")
@@ -200,28 +201,8 @@ def _comment_sort_key(raw: Any) -> tuple[str, str]:
             created_utc = to_utc_iso(created_raw)
         except ValueError:
             created_utc = ""
-    comment_id = raw.get("id")
-    return (created_utc, comment_id if isinstance(comment_id, str) else "")
-
-
-def _changelog_sort_key(raw: Any) -> tuple[str, str]:
-    """Best-effort `(created, id)` sort key for local tie-break resorting.
-
-    An unparsable `created` or non-string `id` sorts as `""`: such an entry
-    gets dropped by `normalize_changelog_entry` anyway, so its position here
-    is moot.
-    """
-    if not isinstance(raw, dict):
-        return ("", "")
-    created_raw = raw.get("created")
-    created_utc = ""
-    if isinstance(created_raw, str) and created_raw:
-        try:
-            created_utc = to_utc_iso(created_raw)
-        except ValueError:
-            created_utc = ""
-    entry_id = raw.get("id")
-    return (created_utc, entry_id if isinstance(entry_id, str) else "")
+    item_id = raw.get("id")
+    return (created_utc, item_id if isinstance(item_id, str) else "")
 
 
 def _sanitize_attachment_filename(filename: str) -> str:
@@ -802,7 +783,7 @@ class JiraClient:
         # guarantees the deterministic tie-break the public contract requires.
         # This only fixes ties within the fetched window, not ones that
         # straddle its edge -- an accepted, documented limitation.
-        collected.sort(key=_comment_sort_key, reverse=(order == "desc"))
+        collected.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         return collected, total
 
     async def _fetch_comments_since(
@@ -849,7 +830,7 @@ class JiraClient:
                 break
             current_start += len(raw_comments)
 
-        matched.sort(key=_comment_sort_key, reverse=(order == "desc"))
+        matched.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         total = len(matched)
         window = matched[start_at:] if limit == 0 else matched[start_at : start_at + limit]
         return window, total
@@ -1149,10 +1130,21 @@ class JiraClient:
         <= any real total) establishes the true total before it is used to
         compute that range.
         """
-        _, total = await self._fetch_changelog_page(issue_key, 0, 1)
-
-        if start_at >= total:
-            return [], total
+        collected: list[Any] = []
+        if order == "asc" and start_at == 0:
+            # startAt=0 never exceeds the real total, so the first working page
+            # doubles as the discovery fetch.
+            first_size = min(limit or CHANGELOG_PAGE_SIZE, CHANGELOG_PAGE_SIZE)
+            collected, total = await self._fetch_changelog_page(issue_key, 0, first_size)
+            if len(collected) < first_size:
+                collected.sort(key=_created_id_sort_key)
+                return collected, total
+            current = len(collected)
+        else:
+            _, total = await self._fetch_changelog_page(issue_key, 0, 1)
+            if start_at >= total:
+                return [], total
+            current = -1  # set from the range below
 
         remaining = limit if limit != 0 else total - start_at
         if order == "asc":
@@ -1161,9 +1153,9 @@ class JiraClient:
         else:
             high = total - start_at
             low = max(high - remaining, 0)
+        if current < 0:
+            current = low
 
-        collected: list[Any] = []
-        current = low
         while current < high:
             page_size = min(CHANGELOG_PAGE_SIZE, high - current)
             raw_values, _ = await self._fetch_changelog_page(issue_key, current, page_size)
@@ -1172,7 +1164,7 @@ class JiraClient:
             if len(raw_values) < page_size:
                 break
 
-        collected.sort(key=_changelog_sort_key, reverse=(order == "desc"))
+        collected.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         return collected, total
 
     async def get_changelog(

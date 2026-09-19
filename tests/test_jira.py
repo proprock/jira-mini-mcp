@@ -1222,6 +1222,20 @@ class TestGetChangelog:
             )
         ]
 
+    async def test_ascending_from_the_start_needs_no_discovery_request(self) -> None:
+        # startAt=0 never exceeds the real total, so the first working page
+        # already reports an honest one.
+        handler, seen = _recording_handler(_json_response(200, _load("jira_changelog_page.json")))
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-301", start_at=0, limit=20, order="asc")
+
+        assert len(seen) == 1
+        assert seen[0].url.params["startAt"] == "0"
+        assert seen[0].url.params["maxResults"] == "20"
+        assert result.total == 3
+        assert [e.id for e in result.items] == ["50101", "50102", "50103"]
+
     async def test_default_order_is_newest_first(self) -> None:
         fixture = _load("jira_changelog_page.json")
         handler, _ = _recording_handler(_json_response(200, fixture))
@@ -1325,7 +1339,7 @@ class TestGetChangelog:
         result = await _make_client(handler).get_changelog("SYN-1", limit=0, order="asc")
 
         assert [e.id for e in result.items] == ["50001", "50002", "50003", "50004", "50005"]
-        assert len(seen) == 4  # 1 (discovery) + 2 + 2 + 1
+        assert len(seen) == 3  # 2 + 2 + 1: the first page doubles as discovery
 
     async def test_short_page_mid_range_stops_fetching_early(
         self, monkeypatch: pytest.MonkeyPatch
