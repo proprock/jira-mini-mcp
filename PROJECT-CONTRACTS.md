@@ -120,6 +120,18 @@ An explicit `fields` list replaces that default completely; the server adds no
 implicit Jira fields. `fields=[]` is valid and returns issue keys only. Each
 item has `key` plus a `fields` object containing only returned fields.
 
+### Identifier arguments
+
+`issue_key` is an issue key such as `PROJ-123` (letters, digits, and
+underscores before the hyphen, case-insensitive) or a numeric issue id;
+`attachment_id` is a numeric attachment id, as `get_attachments` returns it. Both
+become URL path segments, so the client checks them with a full-string match
+before any request, ahead of every other argument check. A value that is not
+of that shape -- one containing `/`, `?`, `#`, or `..`, or an empty string -- is a
+validation error that names the expected format and does not echo the value.
+It never reaches Jira, so a crafted key cannot steer a request, including the
+`PUT` of `update_issue`, at a different endpoint.
+
 ### `get_issue`
 
 Signature:
@@ -211,7 +223,7 @@ item has metadata only: `id`, `filename`, `mime_type`, `size`, compact
 `author`, and UTC `created`. Never embed binary or base64 attachment contents
 or Jira download URLs.
 
-`download_attachment(attachment_id)` writes to an automatically created
+`download_attachment(attachment_id)` takes a numeric id and writes to an automatically created
 process-scoped temporary cache and returns `attachment_id`, `filename`,
 `mime_type`, `size`, and `local_path`. Store the file at
 `<cache>/<attachment_id>/<sanitized_filename>`, write through a temporary

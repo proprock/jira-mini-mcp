@@ -545,6 +545,79 @@ class TestGetIssue:
         assert exc_info.value.partial_result == {"key": "SYN-1", "fields": {}}
 
 
+_KEYED_CALLS: dict[str, tuple[Callable[[JiraClient, str], Any], str]] = {
+    "get_issue": (lambda c, key: c.get_issue(key), ""),
+    "get_comments": (lambda c, key: c.get_comments(key), "/comment"),
+    "get_attachments": (lambda c, key: c.get_attachments(key), ""),
+    "get_changelog": (lambda c, key: c.get_changelog(key), "/changelog"),
+    "add_comment": (lambda c, key: c.add_comment(key, "hello"), "/comment"),
+    "transition_issue": (lambda c, key: c.transition_issue(key, "Done"), "/transitions"),
+    "update_issue": (lambda c, key: c.update_issue(key, {"labels": ["a"]}), ""),
+}
+
+
+class TestPathArgumentValidation:
+    @pytest.mark.parametrize("method", list(_KEYED_CALLS))
+    @pytest.mark.parametrize(
+        "bad_key", ["X-1/../../myself", "X-1?a=b", "X-1#", "", "../x", "PROJ-", "PROJ-1 ", 7]
+    )
+    async def test_malformed_issue_key_is_rejected_before_any_request(
+        self, method: str, bad_key: Any
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(200, {}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _KEYED_CALLS[method][0](client, bad_key)
+
+        assert seen == []
+        assert exc_info.value.operation == method
+        assert "PROJ-123" in str(exc_info.value)
+        assert "myself" not in str(exc_info.value)
+
+    @pytest.mark.parametrize("method", list(_KEYED_CALLS))
+    @pytest.mark.parametrize("key", ["PROJ-123", "proj-7", "10001", "My_Proj2-45"])
+    async def test_well_formed_issue_key_reaches_the_exact_path(
+        self, method: str, key: str
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(404, {"errorMessages": ["gone"]}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError):
+            await _KEYED_CALLS[method][0](client, key)
+
+        assert seen[0].url.path == f"/rest/api/3/issue/{key}{_KEYED_CALLS[method][1]}"
+
+    async def test_invalid_key_wins_over_other_argument_errors(self) -> None:
+        handler, seen = _recording_handler(_json_response(200, {}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError, match="issue key"):
+            await client.get_comments("../x", start_at=-1)
+
+        assert seen == []
+
+    async def test_reference_field_resolution_uses_the_validated_key(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", "/rest/api/3/issue/PROJ-1"): _json_response(
+                    200, {"key": "PROJ-1", "fields": {}}
+                ),
+                ("GET", "/rest/api/3/issue/PROJ-1/watchers"): _json_response(
+                    200, {"watchCount": 0, "isWatching": False, "watchers": []}
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        await client.get_issue("PROJ-1", fields=["watches"])
+
+        assert [r.url.path for r in seen] == [
+            "/rest/api/3/issue/PROJ-1",
+            "/rest/api/3/issue/PROJ-1/watchers",
+        ]
+
+
 class TestGetIssueReferenceFieldResolution:
     """`watches`/`votes` resolve to real data via one follow-up GET each,
     only when explicitly named in `fields` (PLAN.agents.md Extra 3)."""
@@ -1664,7 +1737,10 @@ class TestDownloadAttachment:
             await client.download_attachment("80001")
         assert list(tmp_path.rglob("*")) == []
 
-    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "a\\b", ".", "..", ""])
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../etc", "a/b", "a\\b", ".", "..", "", "abc", "80001?x=1", "80001#", "8 1", 80001],
+    )
     async def test_invalid_attachment_id_raises_without_http_call(
         self, tmp_path: Path, bad_id: str
     ) -> None:

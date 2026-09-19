@@ -7,6 +7,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `issue_key` and `attachment_id` are checked before the request. A key
+  containing `/`, `?`, `#`, or `..` is rejected with a clear error instead of
+  sending a request to a different Jira resource, which for `update_issue` was a
+  `PUT`. `attachment_id` must be numeric.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added

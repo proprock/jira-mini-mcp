@@ -31,6 +31,12 @@ JSON. If Jira returns a malformed known resource but the rest is usable, the cal
 fails with the exact JSON paths and a sanitized partial result rather than
 pretending the data was fine.
 
+### Identifiers
+
+`issue_key` is a key like `PROJ-123` (any case) or a numeric issue id, and
+`attachment_id` is the numeric id `get_attachments` returns. Anything else,
+including a value with `/`, `?`, `#`, or `..`, is refused before a request is sent.
+
 ### Fields
 
 `search_issues` defaults to these seven fields:

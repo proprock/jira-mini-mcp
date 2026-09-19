@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import urllib.parse
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -114,6 +115,12 @@ CHANGELOG_PAGE_SIZE = 100
 _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
 
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Caller-supplied path segments. Anything outside these shapes (`/`, `?`, `#`,
+# `..`) would let a crafted key steer the request, including a PUT, at another
+# Jira endpoint once httpx normalizes the URL. Matched with `fullmatch`.
+_ISSUE_KEY_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+")
+_ATTACHMENT_ID_PATTERN = re.compile(r"[0-9]+")
 
 # One connect budget and a longer per-read budget: Jira is the slow part,
 # but a stalled socket must not hang the agent for the library default.
@@ -221,24 +228,36 @@ def _sanitize_attachment_filename(filename: str) -> str:
 
 
 def _validate_attachment_id(attachment_id: str) -> None:
-    """Reject an `attachment_id` that would escape its cache subdirectory.
+    """Reject an `attachment_id` that is not a numeric Jira attachment id.
 
     Unlike a Jira-provided filename, `attachment_id` is a caller-supplied
-    public argument that becomes a path segment directly
+    public argument that becomes a URL path and a cache path segment
     (`<cache>/<attachment_id>/...`); it gets a strict validation error
     instead of best-effort sanitization.
     """
     if (
-        not attachment_id
-        or "/" in attachment_id
-        or "\\" in attachment_id
-        or attachment_id in (".", "..")
+        not isinstance(attachment_id, str)
+        or _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None
     ):
         raise errors.JiraValidationError(
-            "download_attachment 'attachment_id' must be a plain identifier "
-            "with no path separators.",
+            "download_attachment 'attachment_id' must be a numeric attachment id, "
+            "as get_attachments returns it.",
             operation="download_attachment",
         )
+
+
+def _issue_segment(issue_key: str, *, operation: str) -> str:
+    """Validate `issue_key` and return it as one safe URL path segment.
+
+    The rejected value is left out of the message: it is the caller's raw
+    input, and echoing a crafted path back adds nothing.
+    """
+    if not isinstance(issue_key, str) or _ISSUE_KEY_PATTERN.fullmatch(issue_key) is None:
+        raise errors.JiraValidationError(
+            f"{operation} needs issue_key as an issue key like PROJ-123 or a numeric issue id.",
+            operation=operation,
+        )
+    return urllib.parse.quote(issue_key, safe="")
 
 
 def _open_binary_for_write(path: Path) -> BinaryIO:
@@ -575,13 +594,14 @@ class JiraClient:
         return SearchPage(items=items, next_page_token=next_page_token)
 
     async def get_issue(self, issue_key: str, fields: list[str] | None = None) -> IssueDetail:
+        segment = _issue_segment(issue_key, operation="get_issue")
         if fields is not None and len(fields) == 0:
             fields_param = _GET_ISSUE_EMPTY_FIELDS_SENTINEL
         else:
             fields_param = _joined_fields(fields, ISSUE_DEFAULT_FIELDS)
 
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="get_issue",
             issue_key=issue_key,
             params={"fields": fields_param},
@@ -620,7 +640,7 @@ class JiraClient:
             for field_name, (endpoint, normalizer) in _REFERENCE_FIELD_RESOLVERS.items():
                 if field_name in fields:
                     normalized_fields[field_name] = await self._resolve_reference_field(
-                        issue_key, field_name, endpoint, normalizer
+                        segment, field_name, endpoint, normalizer
                     )
 
         result = IssueDetail(key=key, fields=normalized_fields)
@@ -794,6 +814,7 @@ class JiraClient:
         order: str = "desc",
         since: str | None = None,
     ) -> Page[Comment]:
+        segment = _issue_segment(issue_key, operation="get_comments")
         if start_at < 0:
             raise errors.JiraValidationError(
                 "get_comments 'start_at' must be a non-negative value.",
@@ -825,10 +846,10 @@ class JiraClient:
                 ) from exc
 
         if since_utc is None:
-            raw_items, total = await self._fetch_comments_window(issue_key, start_at, limit, order)
+            raw_items, total = await self._fetch_comments_window(segment, start_at, limit, order)
         else:
             raw_items, total = await self._fetch_comments_since(
-                issue_key, start_at, limit, order, since_utc
+                segment, start_at, limit, order, since_utc
             )
 
         items: list[Comment] = []
@@ -852,8 +873,9 @@ class JiraClient:
         return result
 
     async def get_attachments(self, issue_key: str) -> list[Attachment]:
+        segment = _issue_segment(issue_key, operation="get_attachments")
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="get_attachments",
             issue_key=issue_key,
             params={"fields": "attachment"},
@@ -1092,6 +1114,7 @@ class JiraClient:
         limit: int = 20,
         order: str = "desc",
     ) -> Page[ChangelogEntry]:
+        segment = _issue_segment(issue_key, operation="get_changelog")
         if start_at < 0:
             raise errors.JiraValidationError(
                 "get_changelog 'start_at' must be a non-negative value.",
@@ -1111,7 +1134,7 @@ class JiraClient:
                 issue_key=issue_key,
             )
 
-        raw_items, total = await self._fetch_changelog_window(issue_key, start_at, limit, order)
+        raw_items, total = await self._fetch_changelog_window(segment, start_at, limit, order)
 
         items: list[ChangelogEntry] = []
         problems: list[str] = []
@@ -1140,6 +1163,7 @@ class JiraClient:
         Jira answers the POST with the created comment object, identical to
         an item of the comment collection.
         """
+        segment = _issue_segment(issue_key, operation="add_comment")
         if not isinstance(body, str):
             raise errors.JiraValidationError(
                 "add_comment needs the comment body as Markdown text.",
@@ -1150,7 +1174,7 @@ class JiraClient:
 
         raw = await self._request(
             "POST",
-            f"/rest/api/3/issue/{issue_key}/comment",
+            f"/rest/api/3/issue/{segment}/comment",
             operation="add_comment",
             issue_key=issue_key,
             json_body={"body": document},
@@ -1179,6 +1203,7 @@ class JiraClient:
         named "In Development" -- and two transitions can reach one status,
         so an ambiguous match is reported rather than guessed.
         """
+        segment = _issue_segment(issue_key, operation="transition_issue")
         if not isinstance(to, str) or not to.strip():
             raise errors.JiraValidationError(
                 "transition_issue needs a target. Pass `to` as a transition name or "
@@ -1188,7 +1213,7 @@ class JiraClient:
             )
 
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}/transitions",
+            f"/rest/api/3/issue/{segment}/transitions",
             operation="transition_issue",
             issue_key=issue_key,
         )
@@ -1205,7 +1230,7 @@ class JiraClient:
 
         await self._request(
             "POST",
-            f"/rest/api/3/issue/{issue_key}/transitions",
+            f"/rest/api/3/issue/{segment}/transitions",
             operation="transition_issue",
             issue_key=issue_key,
             json_body=payload,
@@ -1250,6 +1275,7 @@ class JiraClient:
         issue is not re-fetched: a caller wanting confirmation calls
         `get_issue`.
         """
+        segment = _issue_segment(issue_key, operation="update_issue")
         if not isinstance(fields, dict) or not fields:
             raise errors.JiraValidationError(
                 "update_issue needs at least one field to change, for example "
@@ -1271,7 +1297,7 @@ class JiraClient:
 
         await self._request(
             "PUT",
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="update_issue",
             issue_key=issue_key,
             json_body={"fields": payload},
