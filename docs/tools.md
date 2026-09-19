@@ -72,6 +72,20 @@ unless asked for by name. A failure on that extra request (for example, a 403
 when watcher visibility is restricted) is a tool error naming the field - it
 never falls back to Jira's raw `self`/count stub.
 
+### Custom field names
+
+`customfield_10011` tells a reader nothing. When `fields` names any
+`customfield_*`, `get_issue` also returns `field_names`, mapping each returned
+custom field id to its display name:
+
+```text
+get_issue(issue_key="PROJ-123", fields=["customfield_10011"])
+-> {"key": "PROJ-123", "fields": {"customfield_10011": 5}, "field_names": {"customfield_10011": "Story points"}}
+```
+
+Only custom fields that came back with a value are named, and the key is absent
+when there are none. `search_issues` does not return names.
+
 ### Pagination
 
 Large collections never pretend to be complete. `get_comments` and

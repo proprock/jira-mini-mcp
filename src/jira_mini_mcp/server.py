@@ -211,7 +211,10 @@ def _dump_issue_summary(item: IssueSummary) -> dict[str, Any]:
 
 
 def _dump_issue_detail(detail: IssueDetail) -> dict[str, Any]:
-    return {"key": detail.key, "fields": _dump_fields(detail.fields)}
+    result: dict[str, Any] = {"key": detail.key, "fields": _dump_fields(detail.fields)}
+    if detail.field_names:
+        result["field_names"] = dict(detail.field_names)
+    return result
 
 
 def _dump_search_page(page: SearchPage[IssueSummary]) -> dict[str, Any]:
@@ -414,7 +417,9 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
             "with no fields. Requesting 'watches' or 'votes' resolves the real "
             "watcher/voter list (watch_count/is_watching/watchers, "
             "vote_count/has_voted/voters) via one extra request per field, instead "
-            "of Jira's own link-only stub. Does not include comments, attachments, "
+            "of Jira's own link-only stub. When fields names any customfield_*, "
+            "the result adds field_names mapping each returned customfield id to "
+            "its display name. Does not include comments, attachments, "
             "or changelog history; use the dedicated tools for those."
         ),
         _READ_ONLY,

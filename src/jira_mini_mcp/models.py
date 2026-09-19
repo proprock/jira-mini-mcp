@@ -72,10 +72,15 @@ class IssueSummary:
 
 @dataclass(frozen=True)
 class IssueDetail:
-    """The full get_issue result."""
+    """The full get_issue result.
+
+    `field_names` maps a returned `customfield_*` id to its display name; it is
+    filled only when the caller asked for such a field.
+    """
 
     key: str
     fields: dict[str, Any]
+    field_names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

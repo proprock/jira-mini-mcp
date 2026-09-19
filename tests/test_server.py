@@ -475,6 +475,27 @@ class TestSearchIssues:
 
 
 class TestGetIssue:
+    async def test_field_names_are_returned_only_when_present(self) -> None:
+        fake = FakeJiraClient()
+        fake.get_issue_result = IssueDetail(
+            key="ABC-1",
+            fields={"customfield_10011": 5},
+            field_names={"customfield_10011": "Story points"},
+        )
+        async with Client(_server_with(fake)) as client:
+            named = await client.call_tool(
+                "get_issue", {"issue_key": "ABC-1", "fields": ["customfield_10011"]}
+            )
+            fake.get_issue_result = IssueDetail(key="ABC-1", fields={})
+            plain = await client.call_tool("get_issue", {"issue_key": "ABC-1"})
+
+        assert _content_json(named) == {
+            "key": "ABC-1",
+            "fields": {"customfield_10011": 5},
+            "field_names": {"customfield_10011": "Story points"},
+        }
+        assert _content_json(plain) == {"key": "ABC-1", "fields": {}}
+
     async def test_response_shapes_key_and_fields(self) -> None:
         fake = FakeJiraClient()
         fake.get_issue_result = IssueDetail(

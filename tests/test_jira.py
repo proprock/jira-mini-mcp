@@ -618,6 +618,108 @@ class TestPathArgumentValidation:
         ]
 
 
+class TestGetIssueFieldNames:
+    """`expand=names` shape observed live 2026-09-19 on a Jira Cloud test site:
+    `names` maps every requested field id -- standard ones too -- to its display
+    name. Values below are synthesized."""
+
+    @staticmethod
+    def _body(fields: dict[str, Any], names: Any) -> dict[str, Any]:
+        return {"key": "SYN-1", "fields": fields, "names": names}
+
+    async def test_a_custom_field_request_expands_names_and_maps_the_id(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(
+                200,
+                self._body(
+                    {"summary": "Title", "customfield_10011": "raw"},
+                    {"summary": "Summary", "customfield_10011": "Story points"},
+                ),
+            )
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1", fields=["summary", "customfield_10011"]
+        )
+
+        assert seen[0].url.params["expand"] == "names"
+        assert result.field_names == {"customfield_10011": "Story points"}
+        assert result.fields["customfield_10011"] == "raw"
+
+    @pytest.mark.parametrize("fields", [None, [], ["summary", "labels"]])
+    async def test_no_custom_field_means_no_expand_and_no_names(
+        self, fields: list[str] | None
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(200, {"key": "SYN-1", "fields": {}}))
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=fields)
+
+        assert "expand" not in seen[0].url.params
+        assert result.field_names == {}
+
+    @pytest.mark.parametrize("names", [None, "nope", ["a"], 7])
+    async def test_malformed_names_do_not_fail_the_issue(self, names: Any) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, self._body({"customfield_10011": "raw"}, names))
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011"])
+
+        assert result.fields == {"customfield_10011": "raw"}
+        assert result.field_names == {}
+
+    async def test_only_returned_custom_fields_with_a_real_name_are_kept(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(
+                200,
+                self._body(
+                    {"customfield_10011": "raw", "customfield_10012": "raw2", "summary": "S"},
+                    {
+                        "customfield_10011": "Story points",
+                        "customfield_10012": "",
+                        "customfield_10013": "Not returned",
+                        "summary": "Summary",
+                    },
+                ),
+            )
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1",
+            fields=["summary", "customfield_10011", "customfield_10012", "customfield_10013"],
+        )
+
+        assert result.field_names == {"customfield_10011": "Story points"}
+
+    async def test_a_custom_field_jira_returned_as_null_has_no_name_entry(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(
+                200,
+                self._body({"customfield_10011": None}, {"customfield_10011": "Story points"}),
+            )
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011"])
+
+        assert result.field_names == {}
+
+    async def test_a_partial_result_still_carries_the_names(self) -> None:
+        raw = self._body(
+            {
+                "customfield_10011": "raw",
+                "project": {"id": "1", "key": "SYN"},
+            },
+            {"customfield_10011": "Story points"},
+        )
+        handler, _ = _recording_handler(_json_response(200, raw))
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011", "project"])
+
+        assert exc_info.value.partial_result["field_names"] == {"customfield_10011": "Story points"}
+        assert exc_info.value.partial_result["fields"] == {"customfield_10011": "raw"}
+
+
 class TestGetIssueReferenceFieldResolution:
     """`watches`/`votes` resolve to real data via one follow-up GET each,
     only when explicitly named in `fields` (PLAN.agents.md Extra 3)."""

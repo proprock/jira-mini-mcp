@@ -427,6 +427,23 @@ def _ambiguous_transition_error(
     )
 
 
+def _custom_field_names(body: dict[str, Any], fields: dict[str, Any]) -> dict[str, str]:
+    """Display names for the `customfield_*` ids present in the normalized `fields`.
+
+    The names are auxiliary: an absent or malformed `names` yields no mapping
+    rather than failing an issue whose data is fine.
+    """
+    names = body.get("names")
+    if not isinstance(names, dict):
+        return {}
+    mapping: dict[str, str] = {}
+    for field_id in fields:
+        name = names.get(field_id)
+        if field_id.startswith("customfield_") and isinstance(name, str) and name:
+            mapping[field_id] = name
+    return mapping
+
+
 def _user_list(users: list[User]) -> str:
     return "; ".join(f"{user.display_name} ({user.account_id})" for user in users)
 
@@ -648,11 +665,18 @@ class JiraClient:
         else:
             fields_param = _joined_fields(fields, ISSUE_DEFAULT_FIELDS)
 
+        params = {"fields": fields_param}
+        wants_names = fields is not None and any(name.startswith("customfield_") for name in fields)
+        if wants_names:
+            # A customfield_* id means nothing to a reader; Jira supplies the
+            # display names in the same response.
+            params["expand"] = "names"
+
         body = await self._get(
             f"/rest/api/3/issue/{segment}",
             operation="get_issue",
             issue_key=issue_key,
-            params={"fields": fields_param},
+            params=params,
         )
 
         if not isinstance(body, dict):
@@ -691,13 +715,17 @@ class JiraClient:
                         segment, field_name, endpoint, normalizer
                     )
 
-        result = IssueDetail(key=key, fields=normalized_fields)
+        field_names = _custom_field_names(body, normalized_fields) if wants_names else {}
+        result = IssueDetail(key=key, fields=normalized_fields, field_names=field_names)
         if problems:
+            partial = asdict(result)
+            if not partial["field_names"]:
+                del partial["field_names"]
             raise _incomplete_response_error(
                 operation="get_issue",
                 issue_key=issue_key,
                 problems=problems,
-                partial_result=asdict(result),
+                partial_result=partial,
             )
 
         return result
