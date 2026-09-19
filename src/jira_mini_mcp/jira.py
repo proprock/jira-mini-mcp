@@ -135,7 +135,7 @@ _REQUEST_BUDGET = 45.0
 # An attachment is buffered to disk in full and handed to the agent as a local
 # file, so a runaway one would fill the temp directory; refuse it up front and,
 # in case Jira's reported size is wrong, while streaming.
-_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
 
 # Chunks from the network are small; coalescing them keeps the number of
 # worker-thread hops per download low.
@@ -244,7 +244,9 @@ def _validate_attachment_id(attachment_id: str) -> None:
 
 def _attachment_too_large(size: int) -> errors.JiraValidationError:
     return errors.JiraValidationError(
-        f"download_attachment refuses attachments over 50 MB; this one is {size} bytes.",
+        f"download_attachment refuses attachments over 100 MB; this one is {size} bytes. "
+        "Do not retry: tell the user this attachment is too large for this server to "
+        "fetch, so they can download it from Jira themselves and share it.",
         operation="download_attachment",
     )
 

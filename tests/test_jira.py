@@ -1949,10 +1949,11 @@ class TestDownloadAttachmentSize:
         handler, seen = _attachment_download_handler(metadata=metadata)
         client = _make_client(handler, cache_dir=tmp_path)
 
-        with pytest.raises(errors.JiraValidationError, match="over 50 MB") as exc_info:
+        with pytest.raises(errors.JiraValidationError, match="over 100 MB") as exc_info:
             await client.download_attachment("80001")
 
         assert str(jira._MAX_ATTACHMENT_BYTES + 1) in str(exc_info.value)
+        assert "tell the user" in str(exc_info.value)
         assert [r.url.path for r in seen] == ["/rest/api/3/attachment/80001"]
         assert list(tmp_path.rglob("*")) == []
 
@@ -1974,7 +1975,7 @@ class TestDownloadAttachmentSize:
         handler, _ = _streaming_download_handler([b"01234", b"56789", b"X"], reported_size=5)
         client = _make_client(handler, cache_dir=tmp_path)
 
-        with pytest.raises(errors.JiraValidationError, match="over 50 MB"):
+        with pytest.raises(errors.JiraValidationError, match="over 100 MB"):
             await client.download_attachment("80001")
 
         assert list((tmp_path / "80001").glob("*")) == []

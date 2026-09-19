@@ -231,7 +231,8 @@ process-scoped temporary cache and returns `attachment_id`, `filename`,
 files after failures or cancellation. Prevent path traversal and symlink or
 reparse-point escape. Remove the cache during normal server shutdown.
 
-Refuse an attachment over 50 MB with a validation error, from Jira's reported
+Refuse an attachment over 100 MB with a validation error that tells the agent to
+report the limit to the user rather than retry, from Jira's reported
 `size` before fetching the content and again while streaming, in case that size
 is wrong. A download whose received byte count differs from the reported `size`
 is a server error and leaves no file behind.

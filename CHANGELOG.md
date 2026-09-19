@@ -11,7 +11,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `download_attachment` refuses attachments over 50 MB and checks that the
+- `download_attachment` refuses attachments over 100 MB, with an error that tells
+  the agent to report it to the user instead of retrying, and checks that the
   bytes received match the size Jira reported, failing with an error and leaving
   no file when they do not.
 - One tool call, retries included, now finishes within 45 seconds. When Jira

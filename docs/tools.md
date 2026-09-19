@@ -96,7 +96,8 @@ than silently treated as a default.
 `get_attachments` returns metadata only. Only when a file matters does the agent
 call `download_attachment`, which writes into an automatically managed
 process-scoped temporary cache and returns a local path. No download directory to
-configure, and the cache is removed at shutdown. Attachments over 50 MB are refused.
+configure, and the cache is removed at shutdown. Attachments over 100 MB are refused, and the error tells the agent to
+ask the user to fetch the file.
 
 ## Examples
 
