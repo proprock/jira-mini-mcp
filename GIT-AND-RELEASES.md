@@ -81,13 +81,14 @@ other additive capability is a MINOR bump; a fix alone is a PATCH. Before
 `1.0`, a breaking change to a published tool contract is also a MINOR bump,
 and it says so in the entry rather than relying on the number.
 
-Before pushing the tag, run `tests/test_version_sync.py` on its own
-(`uv run pytest tests/test_version_sync.py`) as a targeted check that
-`pyproject.toml`, both `server.json` version fields, `uv.lock`, and the
-CHANGELOG's newest released heading all agree -- do not rely on it having
-passed incidentally as part of a full `pytest`/`make check` run earlier in the
-same session, since a version file can change after that run without the
-suite being rerun.
+The `version-sync` commit hook runs `scripts/check_version_sync.py` whenever
+`pyproject.toml`, `server.json`, `uv.lock`, or `CHANGELOG.md` changes, and CI runs
+it on every push. It checks that `pyproject.toml`, both `server.json` version
+fields, `uv.lock`, and the CHANGELOG's newest released heading and `[Unreleased]`
+compare link all name one version. Before pushing the tag, run
+`uv run python scripts/check_version_sync.py` once more on the commit to be
+tagged: the hook only fires on a commit that touches one of those files, and only
+if `uv run prek install` was run in the clone.
 
 A MAJOR bump, and creating or pushing the release tag itself, happens only on
 the user's explicit instruction — never inferred, never bundled into a MINOR
