@@ -72,6 +72,33 @@ unless asked for by name. A failure on that extra request (for example, a 403
 when watcher visibility is restricted) is a tool error naming the field - it
 never falls back to Jira's raw `self`/count stub.
 
+### Available transitions
+
+Naming `transitions` in `get_issue`'s `fields` lists the moves available now,
+with the status each leads to. It is resolved with one extra request and never
+sent to Jira as a field:
+
+```text
+get_issue(issue_key="PROJ-123", fields=["transitions"])
+-> {"key": "PROJ-123", "fields": {"transitions": [{"id": "21", "name": "In Progress", "status": {"id": "10001", "name": "In Development", "category": "indeterminate"}}, ...]}}
+```
+
+The `name` values are what `transition_issue` accepts in `to`.
+
+### Custom field names
+
+`customfield_10011` tells a reader nothing. When `fields` names any
+`customfield_*`, `get_issue` also returns `field_names`, mapping each returned
+custom field id to its display name:
+
+```text
+get_issue(issue_key="PROJ-123", fields=["customfield_10011"])
+-> {"key": "PROJ-123", "fields": {"customfield_10011": 5}, "field_names": {"customfield_10011": "Story points"}}
+```
+
+Only custom fields that came back with a value are named, and the key is absent
+when there are none. `search_issues` does not return names.
+
 ### Pagination
 
 Large collections never pretend to be complete. `get_comments` and
@@ -178,7 +205,10 @@ get_issue(issue_key="PROJ-123", fields=["labels"])
 update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["backend", "needs-review"]})
 ```
 
-`assignee` accepts `"me"`. `description` takes Markdown, which is converted to
+`assignee` accepts `"me"`, an account id, or a colleague's email or display name,
+which is looked up among active users. An ambiguous name is an error listing the
+candidates as `Name (accountId)`, never a guess; emails are matched but never
+shown. `description` takes Markdown, which is converted to
 Jira rich text.
 
 **Same prompts, no write access.** With `READ_ONLY_MODE=true` the server

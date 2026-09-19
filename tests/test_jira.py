@@ -618,6 +618,108 @@ class TestPathArgumentValidation:
         ]
 
 
+class TestGetIssueFieldNames:
+    """`expand=names` shape observed live 2026-09-19 on a Jira Cloud test site:
+    `names` maps every requested field id -- standard ones too -- to its display
+    name. Values below are synthesized."""
+
+    @staticmethod
+    def _body(fields: dict[str, Any], names: Any) -> dict[str, Any]:
+        return {"key": "SYN-1", "fields": fields, "names": names}
+
+    async def test_a_custom_field_request_expands_names_and_maps_the_id(self) -> None:
+        handler, seen = _recording_handler(
+            _json_response(
+                200,
+                self._body(
+                    {"summary": "Title", "customfield_10011": "raw"},
+                    {"summary": "Summary", "customfield_10011": "Story points"},
+                ),
+            )
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1", fields=["summary", "customfield_10011"]
+        )
+
+        assert seen[0].url.params["expand"] == "names"
+        assert result.field_names == {"customfield_10011": "Story points"}
+        assert result.fields["customfield_10011"] == "raw"
+
+    @pytest.mark.parametrize("fields", [None, [], ["summary", "labels"]])
+    async def test_no_custom_field_means_no_expand_and_no_names(
+        self, fields: list[str] | None
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(200, {"key": "SYN-1", "fields": {}}))
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=fields)
+
+        assert "expand" not in seen[0].url.params
+        assert result.field_names == {}
+
+    @pytest.mark.parametrize("names", [None, "nope", ["a"], 7])
+    async def test_malformed_names_do_not_fail_the_issue(self, names: Any) -> None:
+        handler, _ = _recording_handler(
+            _json_response(200, self._body({"customfield_10011": "raw"}, names))
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011"])
+
+        assert result.fields == {"customfield_10011": "raw"}
+        assert result.field_names == {}
+
+    async def test_only_returned_custom_fields_with_a_real_name_are_kept(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(
+                200,
+                self._body(
+                    {"customfield_10011": "raw", "customfield_10012": "raw2", "summary": "S"},
+                    {
+                        "customfield_10011": "Story points",
+                        "customfield_10012": "",
+                        "customfield_10013": "Not returned",
+                        "summary": "Summary",
+                    },
+                ),
+            )
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1",
+            fields=["summary", "customfield_10011", "customfield_10012", "customfield_10013"],
+        )
+
+        assert result.field_names == {"customfield_10011": "Story points"}
+
+    async def test_a_custom_field_jira_returned_as_null_has_no_name_entry(self) -> None:
+        handler, _ = _recording_handler(
+            _json_response(
+                200,
+                self._body({"customfield_10011": None}, {"customfield_10011": "Story points"}),
+            )
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011"])
+
+        assert result.field_names == {}
+
+    async def test_a_partial_result_still_carries_the_names(self) -> None:
+        raw = self._body(
+            {
+                "customfield_10011": "raw",
+                "project": {"id": "1", "key": "SYN"},
+            },
+            {"customfield_10011": "Story points"},
+        )
+        handler, _ = _recording_handler(_json_response(200, raw))
+
+        with pytest.raises(errors.JiraIncompleteResponseError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["customfield_10011", "project"])
+
+        assert exc_info.value.partial_result["field_names"] == {"customfield_10011": "Story points"}
+        assert exc_info.value.partial_result["fields"] == {"customfield_10011": "raw"}
+
+
 class TestGetIssueReferenceFieldResolution:
     """`watches`/`votes` resolve to real data via one follow-up GET each,
     only when explicitly named in `fields` (PLAN.agents.md Extra 3)."""
@@ -757,6 +859,200 @@ class TestGetIssueReferenceFieldResolution:
 
         assert [request.url.path for request in seen] == [self._ISSUE_PATH, self._WATCHERS_PATH]
         assert result.fields["watches"]["watch_count"] == 1
+
+
+class TestGetIssueTransitions:
+    """`fields=["transitions"]` lists the moves available now. It is not a Jira
+    field, so it is resolved from GET .../transitions and never sent upstream."""
+
+    _ISSUE_PATH = "/rest/api/3/issue/SYN-1"
+    _TRANSITIONS_PATH = "/rest/api/3/issue/SYN-1/transitions"
+    _WATCHERS_PATH = "/rest/api/3/issue/SYN-1/watchers"
+    _VOTES_PATH = "/rest/api/3/issue/SYN-1/votes"
+
+    @staticmethod
+    def _issue(fields: dict[str, Any] | None = None) -> httpx2.Response:
+        return _json_response(200, {"key": "SYN-1", "fields": fields or {}})
+
+    @staticmethod
+    def _transitions() -> httpx2.Response:
+        return _json_response(200, _load("jira_issue_transitions.json"))
+
+    async def test_lists_id_name_and_status_in_the_transition_result_shape(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert [r.url.path for r in seen] == [self._ISSUE_PATH, self._TRANSITIONS_PATH]
+        listed = result.fields["transitions"]
+        assert listed[1] == {
+            "id": "21",
+            "name": "In Progress",
+            "status": {"id": "10001", "name": "In Development", "category": "indeterminate"},
+        }
+        assert [t["name"] for t in listed] == [
+            "To Do",
+            "In Progress",
+            "Ready",
+            "Prepared",
+            "Done",
+        ]
+        assert all(set(t) == {"id", "name", "status"} for t in listed)
+
+    async def test_transitions_are_not_sent_to_jira_as_a_field(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        await _make_client(handler).get_issue("SYN-1", fields=["summary", "transitions"])
+
+        assert seen[0].url.params["fields"] == "summary"
+
+    async def test_asking_only_for_transitions_still_uses_the_empty_fields_sentinel(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        # An empty `fields` would make Jira return its full field set.
+        assert seen[0].url.params["fields"] == jira._GET_ISSUE_EMPTY_FIELDS_SENTINEL
+        assert set(result.fields) == {"transitions"}
+
+    async def test_no_available_transition_is_an_empty_list(self) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): _json_response(200, {"transitions": []}),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert result.fields["transitions"] == []
+
+    async def test_watches_votes_and_transitions_make_three_followups(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    200, _load("jira_watchers.json")["raw"]
+                ),
+                ("GET", self._VOTES_PATH): _json_response(200, _load("jira_votes.json")["raw"]),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1", fields=["transitions", "votes", "watches"]
+        )
+
+        assert seen[0].url.path == self._ISSUE_PATH
+        assert sorted(r.url.path for r in seen[1:]) == sorted(
+            [self._WATCHERS_PATH, self._VOTES_PATH, self._TRANSITIONS_PATH]
+        )
+        # The result never depends on which request finished first.
+        assert list(result.fields) == ["watches", "votes", "transitions"]
+
+    async def test_followups_run_concurrently(self) -> None:
+        in_flight = 0
+        peak = 0
+        transitions = _load("jira_issue_transitions.json")
+
+        async def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal in_flight, peak
+            path = request.url.path
+            if path == self._ISSUE_PATH:
+                return self._issue()
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            if path == self._TRANSITIONS_PATH:
+                return _json_response(200, transitions)
+            if path == self._WATCHERS_PATH:
+                return _json_response(200, _load("jira_watchers.json")["raw"])
+            return _json_response(200, _load("jira_votes.json")["raw"])
+
+        client = JiraClient(
+            httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+            BasicTokenAuth("agent@example.com", "super-secret-token"),
+            BASE_URL,
+            Path("."),
+        )
+
+        await client.get_issue("SYN-1", fields=["watches", "votes", "transitions"])
+
+        assert peak == 3
+
+    async def test_a_failing_followup_is_named_and_the_first_failure_in_field_order_wins(
+        self,
+    ) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._WATCHERS_PATH): _json_response(403, {"errorMessages": ["no"]}),
+                ("GET", self._TRANSITIONS_PATH): _json_response(404, {"errorMessages": ["no"]}),
+            }
+        )
+
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["transitions", "watches"])
+
+        assert "watches" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"transitions": "nope"},
+            {"transitions": [{"id": "1", "name": "Go"}]},
+            {"transitions": [7]},
+            {"no": "envelope"},
+            [],
+        ],
+    )
+    async def test_a_malformed_transitions_response_is_a_server_error_naming_the_field(
+        self, body: Any
+    ) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): _json_response(200, body),
+            }
+        )
+
+        with pytest.raises(errors.JiraServerError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert "'transitions'" in str(exc_info.value)
+        assert exc_info.value.issue_key == "SYN-1"
+
+    async def test_the_listed_names_are_the_ones_transition_issue_accepts(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+                ("POST", self._TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        listed = (await client.get_issue("SYN-1", fields=["transitions"])).fields["transitions"]
+        result = await client.transition_issue("SYN-1", listed[1]["name"])
+
+        assert result.transition.id == listed[1]["id"]
+        assert json.loads(seen[-1].content) == {"transition": {"id": listed[1]["id"]}}
 
 
 def _synthetic_comment(index: int, created: str, comment_id: str | None = None) -> dict[str, Any]:
@@ -2347,6 +2643,217 @@ class TestTransitionIssue:
 
         with pytest.raises(errors.JiraServerError):
             await client.transition_issue("SYN-1", "Done")
+
+
+_USER_SEARCH_PATH = "/rest/api/3/user/search"
+
+
+def _found_user(
+    account_id: str,
+    display_name: str,
+    *,
+    email: str | None = None,
+    active: bool = True,
+    account_type: str = "atlassian",
+) -> dict[str, Any]:
+    """One GET /user/search entry.
+
+    Shape observed live 2026-09-19 on a Jira Cloud test site (`self`,
+    `accountId`, `accountType`, `emailAddress`, `avatarUrls`, `displayName`,
+    `active`, `timeZone`, `locale`, `guest`); `emailAddress` is absent for an
+    account that hides it (hand-authored -- the test site had none). Every
+    value is synthesized.
+    """
+    user: dict[str, Any] = {
+        "self": f"{BASE_URL}/rest/api/3/user?accountId={account_id}",
+        "accountId": account_id,
+        "accountType": account_type,
+        "avatarUrls": {"48x48": "https://synthetic-avatars.example.invalid/48.png"},
+        "displayName": display_name,
+        "active": active,
+        "timeZone": "UTC",
+        "locale": "en_US",
+        "guest": False,
+    }
+    if email is not None:
+        user["emailAddress"] = email
+    return user
+
+
+def _assignee_lookup(found: Any) -> tuple[Handler, list[httpx2.Request]]:
+    return _router(
+        {
+            ("GET", _USER_SEARCH_PATH): _json_response(200, found),
+            ("PUT", _ISSUE_PATH): httpx2.Response(204),
+        }
+    )
+
+
+class TestAssigneeLookup:
+    async def test_an_account_id_is_used_without_any_lookup(self) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+
+        await _make_client(handler).update_issue(
+            "SYN-1", {"assignee": "712020:0a1b2c3d-1111-2222-3333-444455556666"}
+        )
+
+        assert [r.method for r in seen] == ["PUT"]
+        assert _body_of(seen[0])["fields"]["assignee"] == {
+            "accountId": "712020:0a1b2c3d-1111-2222-3333-444455556666"
+        }
+
+    @pytest.mark.parametrize("account_id", ["5b10a2844c20165700ede21g", "qm:abc:def_1-2"])
+    async def test_other_account_id_shapes_are_used_as_is(self, account_id: str) -> None:
+        handler, seen = _router({("PUT", _ISSUE_PATH): httpx2.Response(204)})
+
+        await _make_client(handler).update_issue("SYN-1", {"assignee": account_id})
+
+        assert len(seen) == 1
+        assert _body_of(seen[0])["fields"]["assignee"] == {"accountId": account_id}
+
+    async def test_an_email_with_one_exact_match_resolves(self) -> None:
+        handler, seen = _assignee_lookup(
+            [
+                _found_user("acc-1", "Alice Doe", email="alice@example.com"),
+                _found_user("acc-2", "Alicia Roe", email="alicia@example.com"),
+            ]
+        )
+
+        await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice@Example.com"})
+
+        assert seen[0].url.path == _USER_SEARCH_PATH
+        assert seen[0].url.params["query"] == "Alice@Example.com"
+        assert seen[0].url.params["maxResults"] == "20"
+        assert _body_of(seen[1]) == {"fields": {"assignee": {"accountId": "acc-1"}}}
+
+    async def test_a_display_name_resolves_ignoring_case_and_padding(self) -> None:
+        handler, seen = _assignee_lookup(
+            [_found_user("acc-1", "Alice Doe"), _found_user("acc-2", "Alice Dolan")]
+        )
+
+        await _make_client(handler).update_issue("SYN-1", {"assignee": "  alice doe "})
+
+        assert seen[0].url.params["query"] == "alice doe"
+        assert _body_of(seen[1])["fields"]["assignee"] == {"accountId": "acc-1"}
+
+    async def test_two_exact_matches_are_listed_without_email(self) -> None:
+        handler, seen = _assignee_lookup(
+            [
+                _found_user("acc-1", "Alice Doe", email="alice.one@example.com"),
+                _found_user("acc-2", "Alice Doe", email="alice.two@example.com"),
+            ]
+        )
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice Doe"})
+
+        message = str(exc_info.value)
+        assert "more than one user" in message
+        assert "Alice Doe (acc-1); Alice Doe (acc-2)" in message
+        assert "Pass the account id" in message
+        assert "example.com" not in message
+        assert [r.method for r in seen] == ["GET"]
+
+    async def test_a_hidden_email_with_a_single_candidate_is_accepted(self) -> None:
+        handler, seen = _assignee_lookup([_found_user("acc-1", "Alice Doe")])
+
+        await _make_client(handler).update_issue("SYN-1", {"assignee": "alice@example.com"})
+
+        assert _body_of(seen[1])["fields"]["assignee"] == {"accountId": "acc-1"}
+
+    async def test_a_hidden_email_with_several_candidates_is_not_guessed(self) -> None:
+        handler, seen = _assignee_lookup(
+            [_found_user("acc-1", "Alice Doe"), _found_user("acc-2", "Alicia Roe")]
+        )
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "alice@example.com"})
+
+        message = str(exc_info.value)
+        assert "No active user matches that email." in message
+        assert "Alice Doe (acc-1)" in message
+        assert "alice@example.com" not in message
+        assert [r.method for r in seen] == ["GET"]
+
+    async def test_a_name_without_an_exact_match_is_not_guessed_from_one_candidate(
+        self,
+    ) -> None:
+        handler, seen = _assignee_lookup([_found_user("acc-1", "Alice Doe")])
+
+        with pytest.raises(errors.JiraValidationError, match="No active user matches"):
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice"})
+
+        assert [r.method for r in seen] == ["GET"]
+
+    async def test_no_candidates_at_all(self) -> None:
+        handler, _ = _assignee_lookup([])
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Nobody"})
+
+        assert "No active user matches 'Nobody'." in str(exc_info.value)
+        assert "Closest candidates" not in str(exc_info.value)
+
+    async def test_inactive_and_app_accounts_are_never_candidates(self) -> None:
+        handler, seen = _assignee_lookup(
+            [
+                _found_user("acc-1", "Alice Doe", active=False),
+                _found_user("acc-2", "Alice Doe", account_type="app"),
+                _found_user("acc-3", "Alice Doe", account_type="customer"),
+            ]
+        )
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice Doe"})
+
+        message = str(exc_info.value)
+        assert "No active user matches" in message
+        assert "acc-" not in message
+        assert [r.method for r in seen] == ["GET"]
+
+    async def test_the_candidate_list_is_capped_at_ten(self) -> None:
+        handler, _ = _assignee_lookup([_found_user(f"acc-{n}", f"Person {n}") for n in range(15)])
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Someone"})
+
+        message = str(exc_info.value)
+        assert "Person 9 (acc-9)" in message
+        assert "Person 10" not in message
+
+    async def test_entries_without_an_id_or_name_are_skipped(self) -> None:
+        handler, seen = _assignee_lookup(
+            [
+                {"displayName": "Alice Doe"},
+                {"accountId": "acc-0"},
+                "not an object",
+                _found_user("acc-1", "Alice Doe"),
+            ]
+        )
+
+        await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice Doe"})
+
+        assert _body_of(seen[1])["fields"]["assignee"] == {"accountId": "acc-1"}
+
+    @pytest.mark.parametrize("body", [{"users": []}, "nope", 7])
+    async def test_a_search_answer_that_is_not_a_list_is_a_server_error(self, body: Any) -> None:
+        handler, seen = _assignee_lookup(body)
+
+        with pytest.raises(errors.JiraServerError, match="user search"):
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice Doe"})
+
+        assert [r.method for r in seen] == ["GET"]
+
+    async def test_a_failed_lookup_is_named_and_sends_no_write(self) -> None:
+        handler, seen = _router(
+            {("GET", _USER_SEARCH_PATH): _json_response(403, {"errorMessages": ["no"]})}
+        )
+
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            await _make_client(handler).update_issue("SYN-1", {"assignee": "Alice Doe"})
+
+        assert exc_info.value.operation == "update_issue (resolving 'assignee')"
+        assert [r.method for r in seen] == ["GET"]
 
 
 class TestUpdateIssue:

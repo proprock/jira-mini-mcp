@@ -72,10 +72,15 @@ class IssueSummary:
 
 @dataclass(frozen=True)
 class IssueDetail:
-    """The full get_issue result."""
+    """The full get_issue result.
+
+    `field_names` maps a returned `customfield_*` id to its display name; it is
+    filled only when the caller asked for such a field.
+    """
 
     key: str
     fields: dict[str, Any]
+    field_names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -832,6 +837,29 @@ def normalize_transition(
     if identifier is None or name is None or status is None:
         return None
     return Transition(id=identifier, name=name, status=status)
+
+
+def normalize_transitions_list(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> list[dict[str, Any]] | None:
+    """Normalize GET /issue/{key}/transitions into `get_issue`'s `transitions` list.
+
+    Each entry has the same `id`, `name`, and `status` that `transition_issue`
+    reports for the move it ran. A malformed entry is a problem rather than a
+    silent omission: an agent choosing among "the available moves" must not be
+    shown a partial list.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("transitions"), list):
+        _add_problem(problems, f"{path}.transitions", "expected an array")
+        return None
+    listed: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw["transitions"]):
+        transition = normalize_transition(entry, f"{path}[{index}]", problems)
+        if transition is not None:
+            listed.append(
+                {"id": transition.id, "name": transition.name, "status": transition.status}
+            )
+    return listed
 
 
 def normalize_attachment(

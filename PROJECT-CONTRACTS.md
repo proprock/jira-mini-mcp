@@ -178,6 +178,30 @@ when only one is requested. A failure on that extra request (for example, a
 naming the field and the cause; it never falls back to Jira's raw stub or
 silently omits the field.
 
+Requesting `transitions` by name likewise lists the moves available now:
+
+```text
+transitions = [{id, name, status}, ...]
+```
+
+`id` and `name` are the transition's own, and `status` is the compact status the
+move leads to -- the same three parts `transition_issue` reports, and the same
+names it accepts in `to`. It costs one extra request
+(`GET /issue/{key}/transitions`) made only when `transitions` is named in
+`fields`. `transitions` is not a Jira issue field, so it is never sent in the
+`fields` parameter to Jira. When several of `watches`, `votes`, and `transitions`
+are requested, their extra requests run concurrently; the result does not depend
+on completion order, and a failure in any one is the tool error described above.
+
+When `fields` names any `customfield_*`, the request asks Jira to expand field
+names and the result gains `field_names`, mapping each returned `customfield_*`
+id to its display name (`{"customfield_10020": "Sprint"}`). Only ids present in
+the returned `fields`, with a non-empty string name, appear; the key is omitted
+when there are none, and it is never present for the default field set. Names
+are auxiliary: if Jira's `names` is missing or not an object, the issue is
+returned without `field_names` rather than failing. `search_issues` does not
+return field names.
+
 Every other issue field ID Jira exposes -- including `worklog` (which embeds
 real but possibly truncated entries, not a link-only stub) and `comment`
 requested through `get_issue` rather than `get_comments` -- passes through
@@ -303,7 +327,8 @@ one status, in which case only the transition name distinguishes them.
 
 A `to` that matches nothing is a validation error listing every available
 transition and the status it leads to; that listing is the tool's discovery
-channel, which is why there is no separate `get_transitions` tool. A `to` that
+channel -- `get_issue(fields=["transitions"])` lists the same moves ahead of
+time -- which is why there is no separate `get_transitions` tool. A `to` that
 matches more than one transition is a validation error naming the candidates,
 never a guess. If the issue offers no transition at all, the error says so
 rather than reporting a missing match.
@@ -343,7 +368,7 @@ through as raw Jira JSON, exactly as they survive normalization on the way out.
 ```text
 summary      text
 description  Markdown, or null to clear
-assignee     an account id, the literal "me", or null to unassign
+assignee     an account id, an email, a display name, the literal "me", or null to unassign
 labels       a list of strings, replacing the whole list
 components   a list of names, replacing the whole list
 priority     a name, or null
@@ -357,6 +382,27 @@ verb. A caller adding one value reads the issue first.
 `assignee: "me"` resolves through the configured account's own identity, fetched
 once per process, because an agent asked to take a ticket cannot know its own
 account id.
+
+Any other `assignee` string is resolved in this order, with no new tool:
+
+1. a value shaped like an account id (24 hex digits, `<digits>:<uuid>`, or
+   `qm:...`) is used as is, with no lookup;
+2. otherwise `GET /user/search` (`query` = the value, `maxResults` = 20), keeping
+   only active accounts of type `atlassian` -- apps and deactivated users cannot
+   be assigned;
+3. exactly one candidate whose email or display name equals the value, ignoring
+   case, is the assignee;
+4. more than one exact match is a validation error listing them as
+   `Display Name (accountId)` and asking for the account id;
+5. with no exact match, a value containing `@` and exactly one active candidate
+   resolves to that candidate, because Jira hides the email of many accounts yet
+   still finds them by it;
+6. otherwise a validation error saying no active user matches, followed by up to
+   ten candidates as `Display Name (accountId)`.
+
+An email is matched against but never printed or returned, in errors or
+anywhere else. A user-search response that is not a list is a server error;
+an entry without `accountId` or `displayName` is skipped.
 
 An empty `fields` object is a validation error naming the requirement, not a
 no-op request. `status` and `comment` are rejected with a message naming
