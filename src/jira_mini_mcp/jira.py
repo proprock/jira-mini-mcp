@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -18,7 +18,6 @@ from typing import Any, BinaryIO
 import httpx2
 
 from jira_mini_mcp import errors
-from jira_mini_mcp.auth import BasicTokenAuth
 from jira_mini_mcp.models import (
     Attachment,
     ChangelogEntry,
@@ -381,18 +380,31 @@ class JiraClient:
     def __init__(
         self,
         client: httpx2.AsyncClient,
-        auth: BasicTokenAuth,
-        base_url: str,
+        auth: httpx2.Auth,
+        base_url: str | Callable[[], Awaitable[str]],
         cache_dir: Path,
+        *,
+        auth_hint: str = errors.API_TOKEN_AUTH_HINT,
     ) -> None:
+        """`base_url` is the site URL for API-token auth, or, for OAuth, an
+        async provider of the API-gateway URL -- resolved per request so a
+        server started before `jira-mini-mcp login` picks the login up.
+        `auth_hint` completes every 401 message.
+        """
         self._client = client
         self._auth = auth
-        self._base_url = base_url.rstrip("/")
+        self._base_url = base_url
+        self._auth_hint = auth_hint
         # Must already exist (created once by the MCP lifespan); this client
         # only creates the per-attachment subdirectory beneath it.
         self._cache_dir = cache_dir
         # Resolved on first use by assignee="me"; one account per process.
         self._account_id: str | None = None
+
+    async def _api_base(self) -> str:
+        if isinstance(self._base_url, str):
+            return self._base_url.rstrip("/")
+        return (await self._base_url()).rstrip("/")
 
     async def _request(
         self,
@@ -411,7 +423,7 @@ class JiraClient:
         `expect_json=False` returns None instead of treating an empty
         response as a parse failure.
         """
-        url = f"{self._base_url}{path}"
+        url = f"{await self._api_base()}{path}"
         replayable = method.upper() in _REPLAYABLE_METHODS
 
         attempt = 0
@@ -453,7 +465,9 @@ class JiraClient:
                     continue
 
             # Out of attempts, or not worth another: report the real failure.
-            errors.raise_for_response(response, operation=operation, issue_key=issue_key)
+            errors.raise_for_response(
+                response, operation=operation, issue_key=issue_key, auth_hint=self._auth_hint
+            )
 
             if not expect_json:
                 return None
@@ -956,6 +970,11 @@ class JiraClient:
                 operation="download_attachment",
             )
 
+        if not isinstance(self._base_url, str):
+            # `content` points at the site host, which does not accept an
+            # OAuth Bearer token; the gateway serves the same bytes.
+            content_url = f"{await self._api_base()}/rest/api/3/attachment/content/{attachment_id}"
+
         await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
 
         try:
@@ -964,7 +983,9 @@ class JiraClient:
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()
-                    errors.raise_for_response(response, operation="download_attachment")
+                    errors.raise_for_response(
+                        response, operation="download_attachment", auth_hint=self._auth_hint
+                    )
 
                 fh = await asyncio.to_thread(_open_binary_for_write, part_path)
                 try:

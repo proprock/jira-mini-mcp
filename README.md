@@ -12,7 +12,7 @@ A Jira Cloud MCP server for coding agents: 6 read tools, 9 with writes enabled.
 
 [![Model Context Protocol compatible](https://img.shields.io/badge/Model_Context_Protocol-compatible-000000?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
 [![MCP Registry: io.github.proprock/jira-mini-mcp](https://img.shields.io/badge/MCP_Registry-io.github.proprock%2Fjira--mini--mcp-000000?logo=modelcontextprotocol&logoColor=white)](server.json)
-[![Auth: API token](https://img.shields.io/badge/Auth-API_token-2EBC4F)](#configure)
+[![Auth: API token | OAuth 2.0](https://img.shields.io/badge/Auth-API_token_%7C_OAuth_2.0-2EBC4F)](#configure)
 
 <img src="https://raw.githubusercontent.com/proprock/jira-mini-mcp/master/images/swiss-army-knife.jpg" alt="One job. One tool. Done right." width="760">
 
@@ -36,16 +36,18 @@ context it needs for a ticket, the three ways to answer back, and nothing else.
   entry the agent can see.
 - **Compact, predictable output** - stable JSON schemas, Markdown for rich
   text, no `null` spam, no `self` URLs, emails, or avatars; see
-  [what the tools return](#what-the-tools-return).
+  [what the tools return](https://github.com/proprock/jira-mini-mcp/blob/master/docs/tools.md).
 - **Up to ~40% less output on the wire** - turn off the duplicated
   `structuredContent` per tool with `DISABLE_STRUCTURED_OUTPUT`; the model still
-  gets the same JSON. See [Cheaper output](#cheaper-output).
+  gets the same JSON. See [Cheaper output](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md#cheaper-output).
 - **Nothing is silently cut short** - exact totals on comments and changelog,
   cursor paging on search, and `limit=0` to fetch the rest. A failed request is
   an error, never an empty list.
 - **Errors an agent can act on** - a wrong transition name lists every valid
   transition and where it leads, so there is no separate discovery tool. Errors
   never contain your Jira URL, credentials, or raw response bodies.
+- **API token or OAuth** - one minute with an API token, or a browser login
+  through your own OAuth 2.0 app with automatic refresh; see [Configure](#configure).
 - **On PyPI** - `uvx jira-mini-mcp` or `pip install jira-mini-mcp`, no repo
   clone or git URL required.
 
@@ -67,13 +69,14 @@ context it needs for a ticket, the three ways to answer back, and nothing else.
 
 - [Install](#install)
 - [Configure](#configure)
-- [Cheaper output: `DISABLE_STRUCTURED_OUTPUT`](#cheaper-output)
-- [What the tools return](#what-the-tools-return)
 - [Writing to Jira](#writing-to-jira)
-- [Examples](#examples)
 - [Why so few tools](#why-so-few-tools)
 - [Compared with the alternatives](#compared-with-the-alternatives)
 - [Contributing and security](#contributing-and-security)
+
+More detail lives in [`docs/`](https://github.com/proprock/jira-mini-mcp/blob/master/docs): [configuration](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md),
+[OAuth setup](https://github.com/proprock/jira-mini-mcp/blob/master/docs/oauth.md), and [what the tools return, with
+examples](https://github.com/proprock/jira-mini-mcp/blob/master/docs/tools.md).
 
 ## Install
 
@@ -87,7 +90,7 @@ or
 pip install jira-mini-mcp
 ```
 
-Pin a version when you want a fixed surface: `uvx jira-mini-mcp==1.0.0`.
+Pin a version when you want a fixed surface: `uvx jira-mini-mcp==1.1.0`.
 
 Running an unreleased commit straight from GitHub also works:
 
@@ -99,26 +102,28 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or `pip`).
 
 ## Configure
 
-Three required values, and two optional switches:
+With an API token, three values:
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `JIRA_BASE_URL` | yes | Your site, e.g. `https://example.atlassian.net` |
-| `JIRA_EMAIL` | yes | The email your API token belongs to |
-| `JIRA_API_TOKEN` | yes | A [Jira Cloud API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
-| `READ_ONLY_MODE` | no | `true`, `1`, `on` registers only the six read tools |
-| `DISABLE_STRUCTURED_OUTPUT` | no | Comma-separated tool names that return `content` only, skipping `structuredContent`; see [Cheaper output](#cheaper-output) |
+| Variable | Meaning |
+|---|---|
+| `JIRA_BASE_URL` | Your site, e.g. `https://example.atlassian.net` |
+| `JIRA_EMAIL` | The email your API token belongs to |
+| `JIRA_API_TOKEN` | A [Jira Cloud API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
 
-Authentication is Jira Cloud Basic auth with the email and token. Jira
-Server/Data Center, PAT/Bearer, and OAuth are not supported. Configuration is
-validated at startup, and an error names the missing setting without printing its
-value or your Jira URL. An unrecognized `READ_ONLY_MODE` value stops startup
-rather than quietly re-enabling the write tools, and an unrecognized name in
-`DISABLE_STRUCTURED_OUTPUT` stops startup naming it and every valid tool name.
+Add `READ_ONLY_MODE=true` to withhold the write tools. Every setting, including
+`DISABLE_STRUCTURED_OUTPUT`, is in [configuration.md](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md).
 
-Keep the token in the host's own configuration and never commit it. The token
-carries its account's permissions: an account that cannot transition an issue
-still cannot, whatever this server exposes.
+> [!NOTE]
+> **Prefer OAuth to a stored token?** Set `JIRA_AUTH_METHOD=oauth`, register a
+> free OAuth 2.0 (3LO) app, and run `jira-mini-mcp login` once to authorize in
+> your browser. The server then refreshes its token by itself. Step by step:
+> [oauth.md](https://github.com/proprock/jira-mini-mcp/blob/master/docs/oauth.md).
+
+Configuration is validated at startup, and an error names the missing setting
+without printing its value or your Jira URL. Keep the token in the host's own
+configuration and never commit it. The server acts with your account's
+permissions: an account that cannot transition an issue still cannot, whatever
+this server exposes.
 
 <details>
 <summary><b>Claude Code</b></summary>
@@ -168,138 +173,10 @@ codex mcp add jira-mini --env JIRA_BASE_URL=https://example.atlassian.net --env 
 <summary><b>Any other stdio host</b></summary>
 
 Command `uvx`, argument `jira-mini-mcp`, and the three environment variables.
-Add `READ_ONLY_MODE=true` to withhold the write tools.
+Add `READ_ONLY_MODE=true` to withhold the write tools. OAuth host examples are in
+[oauth.md](https://github.com/proprock/jira-mini-mcp/blob/master/docs/oauth.md#2-configure-the-mcp-host).
 
 </details>
-
-## Cheaper output
-
-By default every tool returns its result twice, as the MCP spec asks: the JSON
-as text in `content`, and the same JSON as `structuredContent`, plus an
-`outputSchema` advertised for each tool. A host that forwards both copies to the
-model pays for the same data twice. `DISABLE_STRUCTURED_OUTPUT` names the tools
-that should return `content` only:
-
-```text
-DISABLE_STRUCTURED_OUTPUT=search_issues,get_issue,get_comments,get_changelog
-```
-
-An empty or absent value changes nothing. A name that is not one of the nine
-tools stops startup and lists the valid ones, so a typo never leaves you
-believing a payload shrank when it did not.
-
-**What it saves.** `evals/structured_output_savings.py` measures the exact result
-this server sends in both modes. Across replayed agent sessions on synthetic
-tickets it cuts the `CallToolResult` by about 35-40% (36.6% for a weighted mix of
-all nine tools), and by 42-43% on real tickets from a non-production site. The
-largest read tools gain the most: `get_comments` about 42%, `get_issue` about
-41%, `search_issues` about 35%. Two caveats: these are bytes on the wire, not
-billed tokens, and they only matter where the host actually sends both copies to
-the model. Run the script for your own numbers; see
-[`evals/README.md`](evals/README.md).
-
-**Why it is safe for agent work.**
-
-- `content` carries the *same* compact JSON, byte for byte, whether or not a tool
-  is named. A model reads that text either way and sees the same fields,
-  Markdown, timestamps, and pagination values.
-- Nothing about the contract changes: arguments, defaults, pagination, and error
-  behavior are identical. Errors were always text-only, with the sanitized
-  partial result inline, so failure handling is unaffected.
-- What you give up is the machine-checkable `outputSchema` and typed
-  `structuredContent`, which only a programmatic client that validates or
-  parses results in code makes use of. A coding agent that reads tool output
-  as text does not.
-
-Turn it off for the large read tools, where the saving is real. Leave it on for a
-tool whose result a host or pipeline consumes as typed data.
-
-## What the tools return
-
-Structured JSON with stable output schemas, and no second human-readable
-rendering of the same result (the JSON is sent as text and as
-`structuredContent`; see [Cheaper output](#cheaper-output) to send it once).
-Jira's rich text becomes Markdown inside the
-corresponding string field. Timestamps normalize to UTC ISO-8601 with a `Z`.
-Users are `account_id` and `display_name` only - no email, avatar, or `self` URL.
-Known resources use compact shapes:
-
-```text
-issuetype  = {id, name, hierarchy_level}
-status     = {id, name, category}
-priority   = {id, name}
-project    = {id, key, name}
-components = [{id, name}, ...]
-issue      = {key, summary?, status?, issuetype?}
-issuelink  = {relationship, issue}
-```
-
-Absent and unrequested values are omitted rather than returned as `null`.
-Explicitly requested unknown or `customfield_*` values are preserved as Jira
-JSON. If Jira returns a malformed known resource but the rest is usable, the call
-fails with the exact JSON paths and a sanitized partial result rather than
-pretending the data was fine.
-
-### Fields
-
-`search_issues` defaults to these seven fields:
-
-```text
-summary, status, issuetype, priority, assignee, updated, project
-```
-
-`get_issue` defaults to these sixteen fields:
-
-```text
-summary, description, issuetype, status, priority, assignee, reporter,
-labels, components, created, updated, resolutiondate, issuelinks,
-project, parent, subtasks
-```
-
-An explicit `fields` list replaces the default completely; the server adds no
-hidden fields. `fields=[]` returns issue keys only.
-
-### Resolved reference fields
-
-Jira represents `watches` and `votes` as a link plus a count, never the actual
-watcher or voter list. Naming either one in `get_issue`'s `fields` resolves it
-to real data with one extra request per field:
-
-```text
-watches = {watch_count, is_watching, watchers: [{account_id, display_name}, ...]}
-votes   = {vote_count, has_voted, voters: [{account_id, display_name}, ...]}
-```
-
-Neither is in the default field set, so this never costs an extra request
-unless asked for by name. A failure on that extra request (for example, a 403
-when watcher visibility is restricted) is a tool error naming the field - it
-never falls back to Jira's raw `self`/count stub.
-
-### Pagination
-
-Large collections never pretend to be complete. `get_comments` and
-`get_changelog` return `start_at`, an exact `total`, and `items` - more exist
-when `start_at + len(items) < total`, and that sum is the next offset. Both
-default to `order="desc"` (offset zero is the newest item) and to 20 items;
-`limit=0` returns everything remaining from `start_at`, with no 100-item cap.
-`get_comments` also takes `since`, applied before ordering and slicing, so
-"what happened since the last release" does not mean loading a multi-year
-discussion.
-
-`search_issues` is the exception. The current
-[Jira Cloud enhanced search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
-is cursor-based with no exact total; its count endpoint is approximate and the
-old offset endpoint is being removed. So search returns `items` and
-`next_page_token` only - pass the token back as `page_token`, and a null token
-means the last page. `limit` is 1..100; zero is rejected with guidance rather
-than silently treated as a default.
-
-### Attachments
-
-`get_attachments` returns metadata only. Only when a file matters does the agent
-call `download_attachment`, which writes into an automatically managed
-process-scoped temporary cache and returns a local path. No download directory to
-configure, and the cache is removed at shutdown.
 
 ## Writing to Jira
 
@@ -336,92 +213,6 @@ Three things are worth knowing before an agent writes:
 Each write tool is annotated `readOnlyHint=false` with honest `destructiveHint`
 and `idempotentHint` values, which is what `READ_ONLY_MODE` filters on.
 
-## Examples
-
-Prompts you might give an agent, and the calls the tools make possible. Each one
-leans on a feature that a generic Jira tool does not have. Issue keys and
-values are placeholders.
-
-**"Summarize PROJ-123: status, owner, and what happened this week."**
-Ask for only what the summary needs, and load only the recent discussion.
-
-```text
-get_issue(issue_key="PROJ-123", fields=["summary", "status", "assignee"])
-get_comments(issue_key="PROJ-123", since="2026-09-14T00:00:00Z", order="asc", limit=0)
--> {"start_at": 0, "total": 4, "items": [...]}   # every comment since the timestamp
-```
-
-`fields` replaces the default set entirely, so nothing extra is fetched.
-`since` is applied before ordering and slicing, so a multi-year discussion is
-never loaded to find last week's replies.
-
-**"Why did PROJ-123 go to Blocked, and who moved it?"**
-The changelog is field-change history with an exact total, newest first.
-
-```text
-get_changelog(issue_key="PROJ-123", limit=5)
--> {"start_at": 0, "total": 37, "items": [...]}   # the five latest changes of 37
-```
-
-If those five do not reach the cause, `start_at=5` continues from there, or
-`limit=0` returns everything remaining. Nothing is truncated without saying so.
-
-**"Find my open bugs in PROJ, most recently updated first, and open the top three."**
-Search is cursor-based and returns compact rows; the agent opens only what it
-needs.
-
-```text
-search_issues(jql='project = PROJ AND type = Bug AND assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC', limit=10)
--> {"items": [...], "next_page_token": "eyJ..."}   # null token means the last page
-get_issue(issue_key="PROJ-201")
-```
-
-**"Who is watching PROJ-123, and has anyone voted?"**
-Jira only returns a link and a count for these. Naming them resolves them to
-people.
-
-```text
-get_issue(issue_key="PROJ-123", fields=["watches", "votes"])
--> {"key": "PROJ-123", "fields": {"watches": {"watch_count": 2, "is_watching": false, "watchers": [...]}, "votes": {...}}}
-```
-
-**"There is a log attached to PROJ-123. What does it say?"**
-Metadata first, the file only when it matters.
-
-```text
-get_attachments(issue_key="PROJ-123")
-download_attachment(attachment_id="10042")
--> a local path in a managed temporary cache, removed at shutdown
-```
-
-**"The fix is merged. Move PROJ-123 to Done and say so."**
-Transitions are matched by name, and a wrong name explains itself.
-
-```text
-transition_issue(issue_key="PROJ-123", to="Done", comment="Fixed in the linked PR")
-```
-
-If `Done` matches nothing, the error lists every transition available from the
-issue's current status and the status each one reaches, so the agent corrects
-itself without a separate lookup tool. `to` matches a transition name or a
-status name, ignoring case; prefer the transition name.
-
-**"Assign PROJ-123 to me and add the label `needs-review`, keeping the existing labels."**
-`labels` is replaced wholesale, so the agent reads first, then writes the full
-list.
-
-```text
-get_issue(issue_key="PROJ-123", fields=["labels"])
-update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["backend", "needs-review"]})
-```
-
-`assignee` accepts `"me"`. `description` takes Markdown, which is converted to
-Jira rich text.
-
-**Same prompts, no write access.** With `READ_ONLY_MODE=true` the server
-registers only the six read tools. An agent asked to comment or transition has
-no such tool to call, rather than a tool that refuses.
-
 ## Why so few tools
 
 A tool definition is a name, a description, an input schema, and often an output
@@ -453,13 +244,13 @@ resources are fetched only when asked for.
 | Scope | Jira only | Jira, Confluence, JSM, Bitbucket, Compass, Loom, and more | Jira and Confluence |
 | Deployments | Cloud | Cloud | Cloud, Server/Data Center |
 | Hosting | Local, stdio | Remote, Atlassian-hosted | Local (stdio, Docker) or HTTP |
-| Auth | API token | OAuth 2.1 or API token | API token, PAT, or OAuth 2.0 |
+| Auth | API token or OAuth 2.0 (own app) | OAuth 2.1 or API token | API token, PAT, or OAuth 2.0 (own app) |
 | Tools | 6-9, always visible | A small default set with on-demand discovery | 98 |
 | Writes | 3 tools | Yes, admin-gated by category | Yes |
 | License | MIT | Apache 2.0 | MIT |
 
 **The official server is the better choice** when you need breadth across
-Atlassian products, OAuth rather than a stored token, Jira Service Management,
+Atlassian products, OAuth without registering an app of your own, Jira Service Management,
 or organization-level controls such as permission groups, IP allowlisting, and
 audit logs. It is Atlassian's own product, it tracks their APIs, and nothing here
 competes with that.

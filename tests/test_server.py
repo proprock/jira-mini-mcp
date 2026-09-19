@@ -1080,7 +1080,7 @@ class TestReadOnlyModeGate:
         monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
-        server_module.main()
+        server_module.main([])
 
         captured = capsys.readouterr()
         assert "READ_ONLY_MODE enabled" in captured.err
@@ -1096,7 +1096,7 @@ class TestReadOnlyModeGate:
         monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
-        server_module.main()
+        server_module.main([])
 
         captured = capsys.readouterr()
         assert captured.err == ""
@@ -1297,7 +1297,7 @@ class TestRequestLogRedaction:
         monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         monkeypatch.setattr(server_module, "create_server", _stub_create_server)
 
-        server_module.main()
+        server_module.main([])
         capsys.readouterr()
 
         assert logging.getLogger("httpx2").level == logging.WARNING
@@ -1328,3 +1328,142 @@ class TestHttpTimeout:
             await client.list_tools()
 
         assert timeouts == [HTTP_TIMEOUT]
+
+
+def _oauth_env(monkeypatch: pytest.MonkeyPatch, config_home: Path) -> None:
+    monkeypatch.setenv("JIRA_AUTH_METHOD", "oauth")
+    monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+    monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "synthetic-client-id")
+    monkeypatch.setenv("JIRA_OAUTH_CLIENT_SECRET", "synthetic-client-secret")
+    monkeypatch.delenv("JIRA_EMAIL", raising=False)
+    monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+    monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+    monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.setenv("APPDATA", str(config_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+
+class TestOAuthMode:
+    async def test_server_starts_before_login_and_tools_say_how_to_log_in(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+
+        async with Client(create_server()) as client:
+            result = await client.call_tool("get_issue", {"issue_key": "SYN-1"})
+
+        assert result.is_error
+        text = _text_of(result)
+        assert "jira-mini-mcp login" in text
+        assert "synthetic-client-secret" not in text
+
+    async def test_missing_client_secret_stops_startup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_SECRET")
+
+        with pytest.raises(ConfigError, match="JIRA_OAUTH_CLIENT_SECRET"):
+            async with Client(create_server()):
+                pass
+
+    def test_startup_names_the_mode_without_values(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(server_module, "create_server", _stub_create_server)
+
+        server_module.main([])
+
+        captured = capsys.readouterr()
+        assert "JIRA_AUTH_METHOD=oauth" in captured.err
+        assert captured.out == ""
+        for secret in ("synthetic-client", "synthetic-tenant"):
+            assert secret not in captured.err
+
+
+class TestCommands:
+    def test_login_runs_the_browser_flow_and_reports_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+        calls: list[tuple[Any, int]] = []
+
+        async def fake_login(config: Any, http_client: Any, *, port: int) -> Path:
+            calls.append((config, port))
+            return tmp_path / "oauth-abc.json"
+
+        monkeypatch.setattr(server_module.oauth, "login", fake_login)
+
+        with pytest.raises(SystemExit) as exc_info:
+            server_module.main(["login", "--port", "9123"])
+
+        assert exc_info.value.code == 0
+        assert calls[0][0].client_id == "synthetic-client-id"
+        assert calls[0][1] == 9123
+        err = capsys.readouterr().err
+        assert "authorized" in err
+        assert "synthetic-client-secret" not in err
+
+    def test_login_failure_exits_nonzero_with_the_reason(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+
+        async def failing_login(config: Any, http_client: Any, *, port: int) -> Path:
+            raise server_module.oauth.OAuthLoginError("Atlassian did not grant access.")
+
+        monkeypatch.setattr(server_module.oauth, "login", failing_login)
+
+        with pytest.raises(SystemExit) as exc_info:
+            server_module.main(["login"])
+
+        assert exc_info.value.code == 1
+        assert "did not grant access" in capsys.readouterr().err
+
+    def test_logout_removes_the_stored_authorization(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _oauth_env(monkeypatch, tmp_path)
+        config = server_module.load_oauth_config()
+        path = server_module.oauth.token_store_path(config)
+        path.parent.mkdir(parents=True)
+        path.write_text("{}", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as first:
+            server_module.main(["logout"])
+        with pytest.raises(SystemExit) as second:
+            server_module.main(["logout"])
+
+        assert (first.value.code, second.value.code) == (0, 0)
+        assert not path.exists()
+        err = capsys.readouterr().err
+        assert "removed" in err
+        assert "no OAuth authorization was stored" in err
+
+    @pytest.mark.parametrize("command", ["login", "logout"])
+    def test_commands_need_oauth_mode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        monkeypatch.delenv("JIRA_AUTH_METHOD", raising=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            server_module.main([command])
+
+        assert exc_info.value.code == 1
+        assert "JIRA_AUTH_METHOD=oauth" in capsys.readouterr().err

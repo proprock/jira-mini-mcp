@@ -12,6 +12,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import httpx2
 
+API_TOKEN_AUTH_HINT = "Check JIRA_EMAIL and JIRA_API_TOKEN."
+OAUTH_AUTH_HINT = "Run `jira-mini-mcp login` to authorize again."
+
 _URL_PATTERN = re.compile(r"(?:https?|ftp)://\S+", re.IGNORECASE)
 
 
@@ -153,10 +156,13 @@ def raise_for_response(
     *,
     operation: str,
     issue_key: str | None = None,
+    auth_hint: str = API_TOKEN_AUTH_HINT,
 ) -> None:
     """Raise the JiraMiniError subclass matching `response`'s status code.
 
-    Does nothing for a successful (< 400) response.
+    Does nothing for a successful (< 400) response. `auth_hint` completes
+    the 401 message with how to fix the credentials of the active auth
+    method.
     """
     status = response.status_code
     if status < 400:
@@ -165,7 +171,7 @@ def raise_for_response(
     detail = _extract_jira_detail(response)
 
     if status == 401:
-        message = "Jira rejected the request credentials. Check JIRA_EMAIL and JIRA_API_TOKEN."
+        message = f"Jira rejected the request credentials. {auth_hint}"
         raise JiraAuthenticationError(
             message, operation=operation, issue_key=issue_key, status_code=status
         )

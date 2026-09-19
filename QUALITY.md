@@ -138,7 +138,10 @@ For write-tool work, explicitly verify:
 Contract tests must also verify:
 
 - Jira Cloud REST API v3 paths and Basic authentication from exactly
-  `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`;
+  `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`, or, with
+  `JIRA_AUTH_METHOD=oauth`, Bearer authentication through the API gateway, token
+  refresh and rotation, and the `login` flow against mocked Atlassian endpoints
+  and a real loopback callback;
 - `search_issues` defaults to `page_token=None`, `limit=20`, accepts `1..100`,
   passes Jira's opaque cursor unchanged between pages, and returns an actionable
   tool error for `limit=0` or another invalid value;

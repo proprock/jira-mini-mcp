@@ -33,6 +33,7 @@ VALID_TOOL_NAMES = frozenset(
 class TestLoadConfigFromEnv:
     def test_loads_exact_three_variables(self) -> None:
         config = auth.load_config_from_env(env=VALID_ENV)
+        assert isinstance(config, auth.JiraConfig)
         assert config.base_url == "https://example.atlassian.net"
         assert config.email == "developer@example.com"
         assert config.api_token == "super-secret-token"
@@ -68,6 +69,7 @@ class TestLoadConfigFromEnv:
         env["UNRELATED_VAR"] = "whatever"
         env["JIRA_PAT"] = "should-be-ignored"
         config = auth.load_config_from_env(env=env)
+        assert isinstance(config, auth.JiraConfig)
         assert config.base_url == VALID_ENV["JIRA_BASE_URL"]
         assert config.email == VALID_ENV["JIRA_EMAIL"]
         assert config.api_token == VALID_ENV["JIRA_API_TOKEN"]
@@ -194,3 +196,55 @@ class TestLoadDisableStructuredOutput:
         assert "super-secret-token" not in message
         assert "developer@example.com" not in message
         assert "example.atlassian.net" not in message
+
+
+OAUTH_ENV = {
+    "JIRA_AUTH_METHOD": "oauth",
+    "JIRA_BASE_URL": "https://example.atlassian.net",
+    "JIRA_OAUTH_CLIENT_ID": "synthetic-client-id",
+    "JIRA_OAUTH_CLIENT_SECRET": "synthetic-client-secret",
+}
+
+
+class TestAuthMethod:
+    @pytest.mark.parametrize("raw", [None, "", "  ", "api_token", "API_TOKEN", " Api_Token "])
+    def test_api_token_is_the_default(self, raw: str | None) -> None:
+        env = {} if raw is None else {"JIRA_AUTH_METHOD": raw}
+        assert auth.load_auth_method(env) == "api_token"
+
+    @pytest.mark.parametrize("raw", ["oauth", "OAuth", " OAUTH "])
+    def test_oauth_spellings(self, raw: str) -> None:
+        assert auth.load_auth_method({"JIRA_AUTH_METHOD": raw}) == "oauth"
+
+    def test_unknown_value_is_a_config_error(self) -> None:
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_auth_method({"JIRA_AUTH_METHOD": "oauth2"})
+        message = str(exc_info.value)
+        assert "'oauth2'" in message
+        assert "api_token" in message
+        assert "oauth" in message
+
+    def test_oauth_config_needs_no_email_or_token(self) -> None:
+        config = auth.load_config_from_env(env=OAUTH_ENV)
+        assert config == auth.OAuthConfig(
+            base_url="https://example.atlassian.net",
+            client_id="synthetic-client-id",
+            client_secret="synthetic-client-secret",
+        )
+
+    @pytest.mark.parametrize(
+        "missing_var", ["JIRA_BASE_URL", "JIRA_OAUTH_CLIENT_ID", "JIRA_OAUTH_CLIENT_SECRET"]
+    )
+    def test_oauth_missing_variable_is_named(self, missing_var: str) -> None:
+        env = dict(OAUTH_ENV)
+        del env[missing_var]
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_config_from_env(env=env)
+        message = str(exc_info.value)
+        assert missing_var in message
+        assert "synthetic-client" not in message
+
+    def test_configs_hide_credentials_in_repr(self) -> None:
+        assert "super-secret-token" not in repr(auth.load_config_from_env(env=VALID_ENV))
+        assert "developer@example.com" not in repr(auth.load_config_from_env(env=VALID_ENV))
+        assert "synthetic-client" not in repr(auth.load_config_from_env(env=OAUTH_ENV))

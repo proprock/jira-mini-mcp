@@ -32,13 +32,16 @@ suitable for direct installation from GitHub.
   not Jira's incidental upstream page order. Search follows Jira Cloud v3's
   cursor API and uses `items` plus `next_page_token`, without inventing an exact
   total.
-- The mandatory part of configuration consists of exactly `JIRA_BASE_URL`,
-  `JIRA_EMAIL`, and `JIRA_API_TOKEN` for the MVP. Do not add another required
-  setup parameter casually. `READ_ONLY_MODE` and `DISABLE_STRUCTURED_OUTPUT`
-  are the two settings already approved as optional; any further optional
-  parameter still needs the user's explicit approval.
+- `JIRA_AUTH_METHOD` selects the credentials. `api_token` (the default)
+  requires exactly `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`; `oauth`
+  requires exactly `JIRA_BASE_URL`, `JIRA_OAUTH_CLIENT_ID`, and
+  `JIRA_OAUTH_CLIENT_SECRET`, with the user's own OAuth 2.0 (3LO) app -- never a
+  client shipped in this repository. Do not add another required setup
+  parameter casually. `JIRA_AUTH_METHOD`, `READ_ONLY_MODE`, and
+  `DISABLE_STRUCTURED_OUTPUT` are the settings already approved as optional;
+  any further optional parameter still needs the user's explicit approval.
 - Never hardcode or log Jira URLs, credentials, authorization headers, OAuth
-  secrets, cloud IDs, or attachment contents. Redact sensitive values in errors.
+  secrets or tokens, cloud IDs, or attachment contents. Redact sensitive values in errors.
 - Make tool errors actionable: state the cause and, when known, how the caller
   can correct it without exposing sensitive data.
 - When a malformed known resource allows a useful partial issue result, keep

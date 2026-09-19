@@ -56,7 +56,7 @@ import httpx2
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 
-from jira_mini_mcp.auth import BasicTokenAuth, ConfigError, load_config_from_env
+from jira_mini_mcp.auth import ConfigError, load_config_from_env
 from jira_mini_mcp.jira import HTTP_TIMEOUT, JiraClient
 from jira_mini_mcp.models import (
     Attachment,
@@ -73,7 +73,7 @@ from jira_mini_mcp.models import (
     UpdateResult,
     User,
 )
-from jira_mini_mcp.server import AppContext, create_server
+from jira_mini_mcp.server import AppContext, _build_jira_client, create_server
 
 DEFAULT_TOTAL_REQUESTS = 100
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -591,9 +591,7 @@ async def _live_session(defaults: dict[str, Any]) -> AsyncIterator[tuple[list[st
     cache_dir = Path(tempfile.mkdtemp(prefix="jira-mini-mcp-eval-"))
     try:
         async with httpx2.AsyncClient(timeout=HTTP_TIMEOUT) as http:
-            real = JiraClient(
-                http, BasicTokenAuth(config.email, config.api_token), config.base_url, cache_dir
-            )
+            real = _build_jira_client(config, http, cache_dir)
             fake = _fake_client(_shape(defaults, "typical"))
             yield keys, _LiveClient(real, fake)
     finally:

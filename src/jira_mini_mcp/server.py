@@ -16,6 +16,7 @@ keeping semantically-nullable ones (`next_page_token`, a changelog change's
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -33,11 +34,16 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from jira_mini_mcp import errors
+from jira_mini_mcp import errors, oauth
 from jira_mini_mcp.auth import (
     BasicTokenAuth,
+    ConfigError,
+    JiraConfig,
+    OAuthConfig,
+    load_auth_method,
     load_config_from_env,
     load_disable_structured_output,
+    load_oauth_config,
     load_read_only_mode,
 )
 from jira_mini_mcp.jira import (
@@ -113,14 +119,34 @@ async def app_lifespan(server: MCPServer[AppContext]) -> AsyncIterator[AppContex
     shutdown; the cache removal is offloaded so it never blocks the loop.
     """
     config = load_config_from_env()
-    auth = BasicTokenAuth(config.email, config.api_token)
     cache_dir = Path(tempfile.mkdtemp(prefix="jira-mini-mcp-"))
     try:
         async with httpx2.AsyncClient(timeout=HTTP_TIMEOUT) as http_client:
-            jira_client = JiraClient(http_client, auth, config.base_url, cache_dir)
-            yield AppContext(jira_client=jira_client)
+            yield AppContext(jira_client=_build_jira_client(config, http_client, cache_dir))
     finally:
         await asyncio.to_thread(shutil.rmtree, cache_dir, ignore_errors=True)
+
+
+def _build_jira_client(
+    config: JiraConfig | OAuthConfig, http_client: httpx2.AsyncClient, cache_dir: Path
+) -> JiraClient:
+    """Pick the auth for the configured method.
+
+    OAuth never fails here when nobody has logged in yet: the server still
+    starts, and each tool call reports how to run `jira-mini-mcp login`.
+    """
+    if isinstance(config, OAuthConfig):
+        session = oauth.OAuthSession(config, http_client)
+        return JiraClient(
+            http_client,
+            oauth.OAuthBearerAuth(session),
+            session.api_base_url,
+            cache_dir,
+            auth_hint=errors.OAUTH_AUTH_HINT,
+        )
+    return JiraClient(
+        http_client, BasicTokenAuth(config.email, config.api_token), config.base_url, cache_dir
+    )
 
 
 def _jira_client(ctx: Context[AppContext]) -> JiraClient:
@@ -545,8 +571,72 @@ def _silence_request_logging() -> None:
     logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 
-def main() -> None:
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="jira-mini-mcp",
+        description="Minimal Jira Cloud MCP server. Without a command, serves MCP over stdio.",
+    )
+    commands = parser.add_subparsers(dest="command")
+    login = commands.add_parser(
+        "login", help="authorize through the browser (JIRA_AUTH_METHOD=oauth)"
+    )
+    login.add_argument(
+        "--port",
+        type=int,
+        default=oauth.DEFAULT_CALLBACK_PORT,
+        help=(
+            "localhost port for the OAuth callback; the app's callback URL must be "
+            f"http://localhost:<port>{oauth.CALLBACK_PATH} (default: %(default)s)"
+        ),
+    )
+    commands.add_parser("logout", help="delete the stored OAuth authorization")
+    return parser.parse_args(argv)
+
+
+def _oauth_command(command: str, port: int) -> int:
+    """Run `login` or `logout`; return the process exit code.
+
+    Status goes to stderr like everything else this program prints, and
+    names no configured value.
+    """
+    try:
+        if load_auth_method() != "oauth":
+            raise ConfigError(
+                f"`jira-mini-mcp {command}` needs JIRA_AUTH_METHOD=oauth; with an API "
+                "token there is nothing to log in to."
+            )
+        config = load_oauth_config()
+        if command == "logout":
+            removed = oauth.delete_tokens(oauth.token_store_path(config))
+            print(
+                "jira-mini-mcp: OAuth authorization removed."
+                if removed
+                else "jira-mini-mcp: no OAuth authorization was stored.",
+                file=sys.stderr,
+            )
+            return 0
+
+        async def run_login() -> Path:
+            async with httpx2.AsyncClient(timeout=HTTP_TIMEOUT) as http_client:
+                return await oauth.login(config, http_client, port=port)
+
+        path = asyncio.run(run_login())
+    except errors.JiraMiniError as exc:
+        print(f"jira-mini-mcp: {exc}", file=sys.stderr)
+        return 1
+    print(f"jira-mini-mcp: authorized. Tokens saved to {path}", file=sys.stderr)
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _parse_args(argv)
+    if args.command is not None:
+        sys.exit(_oauth_command(args.command, getattr(args, "port", 0)))
+
     _silence_request_logging()
+    if load_auth_method() == "oauth":
+        # Like READ_ONLY_MODE below: name the non-default mode, never a value.
+        print("jira-mini-mcp: JIRA_AUTH_METHOD=oauth.", file=sys.stderr)
     read_only_mode = load_read_only_mode()
     if read_only_mode:
         # Announce only the non-default mode: the default is evident from
