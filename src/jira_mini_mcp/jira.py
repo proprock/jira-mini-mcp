@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
@@ -125,6 +126,11 @@ _ATTACHMENT_ID_PATTERN = re.compile(r"[0-9]+")
 # One connect budget and a longer per-read budget: Jira is the slow part,
 # but a stalled socket must not hang the agent for the library default.
 HTTP_TIMEOUT = httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+# Cap on one `_request` call, every attempt and wait included, so our
+# actionable error arrives before the typical 60 s tool timeout of an MCP host.
+# Without it three 30 s attempts plus backoff (or a long Retry-After) run ~90-150 s.
+_REQUEST_BUDGET = 45.0
 
 # Waits before the second and third attempt. A table rather than computed
 # backoff: three attempts is the whole policy, and a table cannot grow a
@@ -297,6 +303,26 @@ async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+def _monotonic() -> float:
+    """Indirection so tests can drive the request budget without real waiting."""
+    return time.monotonic()
+
+
+def _attempt_timeout(remaining: float) -> httpx2.Timeout:
+    """`HTTP_TIMEOUT`, with no phase allowed to outlast the budget that is left."""
+    return httpx2.Timeout(
+        connect=min(10.0, remaining),
+        read=min(30.0, remaining),
+        write=min(30.0, remaining),
+        pool=min(10.0, remaining),
+    )
+
+
+def _fits(delay: float, deadline: float) -> bool:
+    """Whether waiting `delay` still leaves room for another attempt."""
+    return _monotonic() + delay < deadline
+
+
 def _retry_delay(response: httpx2.Response, attempt: int) -> float | None:
     """How long to wait before retrying, or None to stop retrying now."""
     if response.status_code == 429:
@@ -444,6 +470,7 @@ class JiraClient:
         """
         url = f"{await self._api_base()}{path}"
         replayable = method.upper() in _REPLAYABLE_METHODS
+        deadline = _monotonic() + _REQUEST_BUDGET
 
         attempt = 0
         while True:
@@ -453,10 +480,15 @@ class JiraClient:
             final = attempt == _MAX_ATTEMPTS
             try:
                 response = await self._client.request(
-                    method, url, params=params, json=json_body, auth=self._auth
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    auth=self._auth,
+                    timeout=_attempt_timeout(deadline - _monotonic()),
                 )
             except httpx2.TimeoutException as exc:
-                if final or not replayable:
+                if final or not replayable or not _fits(_BACKOFF_DELAYS[attempt - 1], deadline):
                     raise errors.JiraTimeoutError(
                         f"Request timed out for operation '{operation}'. "
                         "Check network connectivity and retry.",
@@ -466,7 +498,7 @@ class JiraClient:
                 await _sleep(_BACKOFF_DELAYS[attempt - 1])
                 continue
             except httpx2.TransportError as exc:
-                if final or not replayable:
+                if final or not replayable or not _fits(_BACKOFF_DELAYS[attempt - 1], deadline):
                     raise errors.JiraNetworkError(
                         f"A network error occurred for operation '{operation}'. "
                         "Check connectivity and retry.",
@@ -479,7 +511,7 @@ class JiraClient:
             retriable = response.status_code == 429 or (response.status_code >= 500 and replayable)
             if retriable and not final:
                 delay = _retry_delay(response, attempt)
-                if delay is not None:
+                if delay is not None and _fits(delay, deadline):
                     await _sleep(delay)
                     continue
 

@@ -2657,6 +2657,156 @@ class TestRetryPolicy:
         assert no_real_sleeping == []
 
 
+class _FakeClock:
+    """A monotonic clock the test advances by hand, so the budget is exercised
+    without waiting: `_sleep` and each scripted response move it forward."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+        self.read_timeouts: list[float | None] = []
+        monkeypatch.setattr(jira, "_monotonic", lambda: self.now)
+        monkeypatch.setattr(jira, "_sleep", self._sleep)
+
+    async def _sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def handler(self, script: list[tuple[float, httpx2.Response | Exception]]) -> Handler:
+        """Answer each call after `duration` fake seconds, recording its read timeout."""
+        remaining = list(script)
+
+        def handle(request: httpx2.Request) -> httpx2.Response:
+            self.read_timeouts.append(request.extensions["timeout"]["read"])
+            if not remaining:
+                raise AssertionError("unscripted request")
+            duration, answer = remaining.pop(0)
+            self.now += duration
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        return handle
+
+
+class TestRequestBudget:
+    """One tool call, retries included, stays inside `_REQUEST_BUDGET` so the
+    caller gets our error before the MCP host gives up on the call."""
+
+    async def test_each_attempt_gets_only_the_budget_that_is_left(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(clock.handler([(20.0, _json_response(503, {}))] * 3))
+
+        with pytest.raises(errors.JiraServerError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5, 1.0]
+        assert clock.read_timeouts == [30.0, 24.5, 3.5]
+
+    async def test_a_retry_after_that_does_not_fit_is_reported_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler([(0.0, httpx2.Response(429, json={}, headers={"Retry-After": "50"}))])
+        )
+
+        with pytest.raises(errors.JiraRateLimitError, match="Retry after 50 seconds"):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == []
+        assert len(clock.read_timeouts) == 1
+
+    async def test_a_retry_after_that_fits_is_still_waited_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (1.0, httpx2.Response(429, json={}, headers={"Retry-After": "40"})),
+                    (1.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        await client.search_issues("project = SYN")
+
+        assert clock.slept == [40.0]
+
+    async def test_a_wait_that_lands_exactly_on_the_deadline_is_not_taken(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler([(0.0, httpx2.Response(429, json={}, headers={"Retry-After": "45"}))])
+        )
+
+        with pytest.raises(errors.JiraRateLimitError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == []
+
+    async def test_repeated_timeouts_stop_when_the_budget_runs_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (30.0, httpx2.ReadTimeout("slow")),
+                    (14.5, httpx2.ReadTimeout("slow")),
+                    (0.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        with pytest.raises(errors.JiraTimeoutError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5]
+        assert len(clock.read_timeouts) == 2
+
+    async def test_repeated_transport_failures_stop_when_the_budget_runs_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (44.0, httpx2.ConnectError("refused")),
+                    (0.4, httpx2.ConnectError("refused")),
+                    (0.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        with pytest.raises(errors.JiraNetworkError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5]
+        assert len(clock.read_timeouts) == 2
+
+    async def test_a_normal_response_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(clock.handler([(0.2, _json_response(200, _SEARCH_OK))]))
+
+        page = await client.search_issues("project = SYN")
+
+        assert page.items == []
+        assert clock.slept == []
+        assert clock.read_timeouts == [30.0]
+
+    async def test_the_attempt_timeout_never_exceeds_the_remaining_budget(self) -> None:
+        timeout = jira._attempt_timeout(2.0)
+
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (2.0, 2.0, 2.0, 2.0)
+        full = jira._attempt_timeout(45.0)
+        assert (full.connect, full.read, full.write, full.pool) == (10.0, 30.0, 30.0, 10.0)
+
+
 class TestBackoffSleep:
     async def test_sleep_actually_waits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The indirection every other test patches out still does its job."""

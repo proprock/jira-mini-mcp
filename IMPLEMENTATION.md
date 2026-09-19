@@ -55,6 +55,13 @@ wait is short, and when Jira asks for longer, report the rate limit with that
 value instead of holding the call open. When attempts run out, raise the error
 the last response maps to, unchanged.
 
+Bound the whole call as well: one `_request`, retries and waits included, gets a
+45 s budget, so the caller receives this server's error before a typical 60 s
+MCP host timeout. Each attempt's timeouts are capped at the budget that is
+left, and a wait that would not leave room for another attempt is not taken --
+the call stops as it would on its last attempt. Attachment downloads have no
+retry and keep the plain per-phase timeouts.
+
 ## Configuration, authentication, and errors
 
 `auth.py` loads the credentials `JIRA_AUTH_METHOD` selects from the environment

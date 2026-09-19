@@ -7,6 +7,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- One tool call, retries included, now finishes within 45 seconds. When Jira
+  stays slow, unavailable, or asks for a longer `Retry-After`, the call fails
+  with the usual specific error instead of running past the MCP host's own
+  timeout (previously up to about 90 seconds, or 150 with `Retry-After`).
+
 ### Fixed
 
 - `issue_key` and `attachment_id` are checked before the request. A key
