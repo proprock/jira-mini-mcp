@@ -72,6 +72,19 @@ unless asked for by name. A failure on that extra request (for example, a 403
 when watcher visibility is restricted) is a tool error naming the field - it
 never falls back to Jira's raw `self`/count stub.
 
+### Available transitions
+
+Naming `transitions` in `get_issue`'s `fields` lists the moves available now,
+with the status each leads to. It is resolved with one extra request and never
+sent to Jira as a field:
+
+```text
+get_issue(issue_key="PROJ-123", fields=["transitions"])
+-> {"key": "PROJ-123", "fields": {"transitions": [{"id": "21", "name": "In Progress", "status": {"id": "10001", "name": "In Development", "category": "indeterminate"}}, ...]}}
+```
+
+The `name` values are what `transition_issue` accepts in `to`.
+
 ### Custom field names
 
 `customfield_10011` tells a reader nothing. When `fields` names any

@@ -9,6 +9,10 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `get_issue(fields=["transitions"])` lists the moves available now, each with
+  its `id`, `name`, and resulting `status`, so an agent can see the options
+  before calling `transition_issue`. Requesting `watches`, `votes`, and
+  `transitions` together now runs their extra requests concurrently.
 - `get_issue` returns `field_names`, mapping each returned `customfield_*` id to
   its display name, whenever `fields` names a custom field.
 - `update_issue` accepts an email or a display name as `assignee`, besides an

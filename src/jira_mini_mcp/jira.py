@@ -42,6 +42,7 @@ from jira_mini_mcp.models import (
     normalize_comment,
     normalize_issue_fields,
     normalize_transition,
+    normalize_transitions_list,
     normalize_votes,
     normalize_watchers,
     to_utc_iso,
@@ -81,12 +82,18 @@ ISSUE_DEFAULT_FIELDS: tuple[str, ...] = (
 # actual watcher/voter list), so an explicit request for either name triggers
 # exactly one follow-up GET, normalized by the paired function here. Every
 # other Jira field ID passes straight through get_issue's `fields` argument.
-_ReferenceNormalizer = Callable[[Any, str, list[NormalizationProblem]], dict[str, Any] | None]
+_ReferenceNormalizer = Callable[[Any, str, list[NormalizationProblem]], Any | None]
 
 _REFERENCE_FIELD_RESOLVERS: dict[str, tuple[str, _ReferenceNormalizer]] = {
     "watches": ("watchers", normalize_watchers),
     "votes": ("votes", normalize_votes),
+    "transitions": ("transitions", normalize_transitions_list),
 }
+
+# Names in `get_issue`'s `fields` that this server resolves itself and that
+# Jira does not know as issue fields, so they are kept out of the request.
+# `watches` and `votes` are real Jira fields and are still sent.
+_NOT_JIRA_FIELDS = frozenset({"transitions"})
 
 # Jira Cloud v3's comment endpoint accepts arbitrary startAt/maxResults and an
 # orderBy=created|-created parameter, unlike search's cursor-only pagination.
@@ -660,10 +667,13 @@ class JiraClient:
 
     async def get_issue(self, issue_key: str, fields: list[str] | None = None) -> IssueDetail:
         segment = _issue_segment(issue_key, operation="get_issue")
-        if fields is not None and len(fields) == 0:
+        jira_fields = (
+            None if fields is None else [name for name in fields if name not in _NOT_JIRA_FIELDS]
+        )
+        if jira_fields is not None and len(jira_fields) == 0:
             fields_param = _GET_ISSUE_EMPTY_FIELDS_SENTINEL
         else:
-            fields_param = _joined_fields(fields, ISSUE_DEFAULT_FIELDS)
+            fields_param = _joined_fields(jira_fields, ISSUE_DEFAULT_FIELDS)
 
         params = {"fields": fields_param}
         wants_names = fields is not None and any(name.startswith("customfield_") for name in fields)
@@ -709,11 +719,25 @@ class JiraClient:
                 problems.extend(str(problem) for problem in exc.problems)
 
         if not problems and fields is not None:
-            for field_name, (endpoint, normalizer) in _REFERENCE_FIELD_RESOLVERS.items():
-                if field_name in fields:
-                    normalized_fields[field_name] = await self._resolve_reference_field(
-                        segment, field_name, endpoint, normalizer
-                    )
+            wanted = [
+                (field_name, endpoint, normalizer)
+                for field_name, (endpoint, normalizer) in _REFERENCE_FIELD_RESOLVERS.items()
+                if field_name in fields
+            ]
+            # Independent GETs, so run them together; collect every outcome and
+            # re-raise the first failure in field order so the error does not
+            # depend on which request finished first.
+            resolved = await asyncio.gather(
+                *(
+                    self._resolve_reference_field(segment, field_name, endpoint, normalizer)
+                    for field_name, endpoint, normalizer in wanted
+                ),
+                return_exceptions=True,
+            )
+            for (field_name, _, _), value in zip(wanted, resolved, strict=True):
+                if isinstance(value, BaseException):
+                    raise value
+                normalized_fields[field_name] = value
 
         field_names = _custom_field_names(body, normalized_fields) if wants_names else {}
         result = IssueDetail(key=key, fields=normalized_fields, field_names=field_names)
@@ -736,7 +760,7 @@ class JiraClient:
         field_name: str,
         endpoint: str,
         normalizer: _ReferenceNormalizer,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Follow `fields.{field_name}`'s `self` link and return real data.
 
         Only called for a field explicitly named in `get_issue`'s `fields`

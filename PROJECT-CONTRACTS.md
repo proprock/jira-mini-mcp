@@ -327,7 +327,8 @@ one status, in which case only the transition name distinguishes them.
 
 A `to` that matches nothing is a validation error listing every available
 transition and the status it leads to; that listing is the tool's discovery
-channel, which is why there is no separate `get_transitions` tool. A `to` that
+channel -- `get_issue(fields=["transitions"])` lists the same moves ahead of
+time -- which is why there is no separate `get_transitions` tool. A `to` that
 matches more than one transition is a validation error naming the candidates,
 never a guess. If the issue offers no transition at all, the error says so
 rather than reporting a missing match.

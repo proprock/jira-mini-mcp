@@ -861,6 +861,200 @@ class TestGetIssueReferenceFieldResolution:
         assert result.fields["watches"]["watch_count"] == 1
 
 
+class TestGetIssueTransitions:
+    """`fields=["transitions"]` lists the moves available now. It is not a Jira
+    field, so it is resolved from GET .../transitions and never sent upstream."""
+
+    _ISSUE_PATH = "/rest/api/3/issue/SYN-1"
+    _TRANSITIONS_PATH = "/rest/api/3/issue/SYN-1/transitions"
+    _WATCHERS_PATH = "/rest/api/3/issue/SYN-1/watchers"
+    _VOTES_PATH = "/rest/api/3/issue/SYN-1/votes"
+
+    @staticmethod
+    def _issue(fields: dict[str, Any] | None = None) -> httpx2.Response:
+        return _json_response(200, {"key": "SYN-1", "fields": fields or {}})
+
+    @staticmethod
+    def _transitions() -> httpx2.Response:
+        return _json_response(200, _load("jira_issue_transitions.json"))
+
+    async def test_lists_id_name_and_status_in_the_transition_result_shape(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert [r.url.path for r in seen] == [self._ISSUE_PATH, self._TRANSITIONS_PATH]
+        listed = result.fields["transitions"]
+        assert listed[1] == {
+            "id": "21",
+            "name": "In Progress",
+            "status": {"id": "10001", "name": "In Development", "category": "indeterminate"},
+        }
+        assert [t["name"] for t in listed] == [
+            "To Do",
+            "In Progress",
+            "Ready",
+            "Prepared",
+            "Done",
+        ]
+        assert all(set(t) == {"id", "name", "status"} for t in listed)
+
+    async def test_transitions_are_not_sent_to_jira_as_a_field(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        await _make_client(handler).get_issue("SYN-1", fields=["summary", "transitions"])
+
+        assert seen[0].url.params["fields"] == "summary"
+
+    async def test_asking_only_for_transitions_still_uses_the_empty_fields_sentinel(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        # An empty `fields` would make Jira return its full field set.
+        assert seen[0].url.params["fields"] == jira._GET_ISSUE_EMPTY_FIELDS_SENTINEL
+        assert set(result.fields) == {"transitions"}
+
+    async def test_no_available_transition_is_an_empty_list(self) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): _json_response(200, {"transitions": []}),
+            }
+        )
+
+        result = await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert result.fields["transitions"] == []
+
+    async def test_watches_votes_and_transitions_make_three_followups(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._WATCHERS_PATH): _json_response(
+                    200, _load("jira_watchers.json")["raw"]
+                ),
+                ("GET", self._VOTES_PATH): _json_response(200, _load("jira_votes.json")["raw"]),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+            }
+        )
+
+        result = await _make_client(handler).get_issue(
+            "SYN-1", fields=["transitions", "votes", "watches"]
+        )
+
+        assert seen[0].url.path == self._ISSUE_PATH
+        assert sorted(r.url.path for r in seen[1:]) == sorted(
+            [self._WATCHERS_PATH, self._VOTES_PATH, self._TRANSITIONS_PATH]
+        )
+        # The result never depends on which request finished first.
+        assert list(result.fields) == ["watches", "votes", "transitions"]
+
+    async def test_followups_run_concurrently(self) -> None:
+        in_flight = 0
+        peak = 0
+        transitions = _load("jira_issue_transitions.json")
+
+        async def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal in_flight, peak
+            path = request.url.path
+            if path == self._ISSUE_PATH:
+                return self._issue()
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            if path == self._TRANSITIONS_PATH:
+                return _json_response(200, transitions)
+            if path == self._WATCHERS_PATH:
+                return _json_response(200, _load("jira_watchers.json")["raw"])
+            return _json_response(200, _load("jira_votes.json")["raw"])
+
+        client = JiraClient(
+            httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+            BasicTokenAuth("agent@example.com", "super-secret-token"),
+            BASE_URL,
+            Path("."),
+        )
+
+        await client.get_issue("SYN-1", fields=["watches", "votes", "transitions"])
+
+        assert peak == 3
+
+    async def test_a_failing_followup_is_named_and_the_first_failure_in_field_order_wins(
+        self,
+    ) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._WATCHERS_PATH): _json_response(403, {"errorMessages": ["no"]}),
+                ("GET", self._TRANSITIONS_PATH): _json_response(404, {"errorMessages": ["no"]}),
+            }
+        )
+
+        with pytest.raises(errors.JiraPermissionError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["transitions", "watches"])
+
+        assert "watches" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"transitions": "nope"},
+            {"transitions": [{"id": "1", "name": "Go"}]},
+            {"transitions": [7]},
+            {"no": "envelope"},
+            [],
+        ],
+    )
+    async def test_a_malformed_transitions_response_is_a_server_error_naming_the_field(
+        self, body: Any
+    ) -> None:
+        handler, _ = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): _json_response(200, body),
+            }
+        )
+
+        with pytest.raises(errors.JiraServerError) as exc_info:
+            await _make_client(handler).get_issue("SYN-1", fields=["transitions"])
+
+        assert "'transitions'" in str(exc_info.value)
+        assert exc_info.value.issue_key == "SYN-1"
+
+    async def test_the_listed_names_are_the_ones_transition_issue_accepts(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", self._ISSUE_PATH): self._issue(),
+                ("GET", self._TRANSITIONS_PATH): self._transitions(),
+                ("POST", self._TRANSITIONS_PATH): httpx2.Response(204),
+            }
+        )
+        client = _make_client(handler)
+
+        listed = (await client.get_issue("SYN-1", fields=["transitions"])).fields["transitions"]
+        result = await client.transition_issue("SYN-1", listed[1]["name"])
+
+        assert result.transition.id == listed[1]["id"]
+        assert json.loads(seen[-1].content) == {"transition": {"id": listed[1]["id"]}}
+
+
 def _synthetic_comment(index: int, created: str, comment_id: str | None = None) -> dict[str, Any]:
     return {
         "id": comment_id or str(1000 + index),

@@ -419,7 +419,9 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
             "vote_count/has_voted/voters) via one extra request per field, instead "
             "of Jira's own link-only stub. When fields names any customfield_*, "
             "the result adds field_names mapping each returned customfield id to "
-            "its display name. Does not include comments, attachments, "
+            "its display name. 'transitions' lists the moves available now (id, "
+            "name, resulting status), the same names transition_issue accepts. "
+            "Does not include comments, attachments, "
             "or changelog history; use the dedicated tools for those."
         ),
         _READ_ONLY,

@@ -199,8 +199,9 @@ Three things are worth knowing before an agent writes:
   a transition called `In Progress` can produce a status called `In Development`,
   and two differently named transitions can reach one status - so prefer the
   transition name. When nothing matches, the error lists every available
-  transition and where it leads. That listing is the discovery mechanism, which
-  is why there is no separate `get_transitions` tool.
+  transition and where it leads. To see the options first, ask
+  `get_issue(fields=["transitions"])`. That is why there is no separate
+  `get_transitions` tool.
 - **`update_issue` replaces `labels` and `components` wholesale.** There is no
   add or remove verb, so read the issue first if you mean to add one value. It
   takes the same values `get_issue` returns: `assignee` as an account id, an

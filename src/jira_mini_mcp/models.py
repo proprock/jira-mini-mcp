@@ -839,6 +839,29 @@ def normalize_transition(
     return Transition(id=identifier, name=name, status=status)
 
 
+def normalize_transitions_list(
+    raw: Any, path: str, problems: list[NormalizationProblem]
+) -> list[dict[str, Any]] | None:
+    """Normalize GET /issue/{key}/transitions into `get_issue`'s `transitions` list.
+
+    Each entry has the same `id`, `name`, and `status` that `transition_issue`
+    reports for the move it ran. A malformed entry is a problem rather than a
+    silent omission: an agent choosing among "the available moves" must not be
+    shown a partial list.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("transitions"), list):
+        _add_problem(problems, f"{path}.transitions", "expected an array")
+        return None
+    listed: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw["transitions"]):
+        transition = normalize_transition(entry, f"{path}[{index}]", problems)
+        if transition is not None:
+            listed.append(
+                {"id": transition.id, "name": transition.name, "status": transition.status}
+            )
+    return listed
+
+
 def normalize_attachment(
     raw: Any, path: str, problems: list[NormalizationProblem]
 ) -> Attachment | None:
