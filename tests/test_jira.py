@@ -545,6 +545,79 @@ class TestGetIssue:
         assert exc_info.value.partial_result == {"key": "SYN-1", "fields": {}}
 
 
+_KEYED_CALLS: dict[str, tuple[Callable[[JiraClient, str], Any], str]] = {
+    "get_issue": (lambda c, key: c.get_issue(key), ""),
+    "get_comments": (lambda c, key: c.get_comments(key), "/comment"),
+    "get_attachments": (lambda c, key: c.get_attachments(key), ""),
+    "get_changelog": (lambda c, key: c.get_changelog(key), "/changelog"),
+    "add_comment": (lambda c, key: c.add_comment(key, "hello"), "/comment"),
+    "transition_issue": (lambda c, key: c.transition_issue(key, "Done"), "/transitions"),
+    "update_issue": (lambda c, key: c.update_issue(key, {"labels": ["a"]}), ""),
+}
+
+
+class TestPathArgumentValidation:
+    @pytest.mark.parametrize("method", list(_KEYED_CALLS))
+    @pytest.mark.parametrize(
+        "bad_key", ["X-1/../../myself", "X-1?a=b", "X-1#", "", "../x", "PROJ-", "PROJ-1 ", 7]
+    )
+    async def test_malformed_issue_key_is_rejected_before_any_request(
+        self, method: str, bad_key: Any
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(200, {}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError) as exc_info:
+            await _KEYED_CALLS[method][0](client, bad_key)
+
+        assert seen == []
+        assert exc_info.value.operation == method
+        assert "PROJ-123" in str(exc_info.value)
+        assert "myself" not in str(exc_info.value)
+
+    @pytest.mark.parametrize("method", list(_KEYED_CALLS))
+    @pytest.mark.parametrize("key", ["PROJ-123", "proj-7", "10001", "My_Proj2-45"])
+    async def test_well_formed_issue_key_reaches_the_exact_path(
+        self, method: str, key: str
+    ) -> None:
+        handler, seen = _recording_handler(_json_response(404, {"errorMessages": ["gone"]}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraNotFoundError):
+            await _KEYED_CALLS[method][0](client, key)
+
+        assert seen[0].url.path == f"/rest/api/3/issue/{key}{_KEYED_CALLS[method][1]}"
+
+    async def test_invalid_key_wins_over_other_argument_errors(self) -> None:
+        handler, seen = _recording_handler(_json_response(200, {}))
+        client = _make_client(handler)
+
+        with pytest.raises(errors.JiraValidationError, match="issue key"):
+            await client.get_comments("../x", start_at=-1)
+
+        assert seen == []
+
+    async def test_reference_field_resolution_uses_the_validated_key(self) -> None:
+        handler, seen = _router(
+            {
+                ("GET", "/rest/api/3/issue/PROJ-1"): _json_response(
+                    200, {"key": "PROJ-1", "fields": {}}
+                ),
+                ("GET", "/rest/api/3/issue/PROJ-1/watchers"): _json_response(
+                    200, {"watchCount": 0, "isWatching": False, "watchers": []}
+                ),
+            }
+        )
+        client = _make_client(handler)
+
+        await client.get_issue("PROJ-1", fields=["watches"])
+
+        assert [r.url.path for r in seen] == [
+            "/rest/api/3/issue/PROJ-1",
+            "/rest/api/3/issue/PROJ-1/watchers",
+        ]
+
+
 class TestGetIssueReferenceFieldResolution:
     """`watches`/`votes` resolve to real data via one follow-up GET each,
     only when explicitly named in `fields` (PLAN.agents.md Extra 3)."""
@@ -1149,6 +1222,20 @@ class TestGetChangelog:
             )
         ]
 
+    async def test_ascending_from_the_start_needs_no_discovery_request(self) -> None:
+        # startAt=0 never exceeds the real total, so the first working page
+        # already reports an honest one.
+        handler, seen = _recording_handler(_json_response(200, _load("jira_changelog_page.json")))
+        client = _make_client(handler)
+
+        result = await client.get_changelog("SYN-301", start_at=0, limit=20, order="asc")
+
+        assert len(seen) == 1
+        assert seen[0].url.params["startAt"] == "0"
+        assert seen[0].url.params["maxResults"] == "20"
+        assert result.total == 3
+        assert [e.id for e in result.items] == ["50101", "50102", "50103"]
+
     async def test_default_order_is_newest_first(self) -> None:
         fixture = _load("jira_changelog_page.json")
         handler, _ = _recording_handler(_json_response(200, fixture))
@@ -1252,7 +1339,7 @@ class TestGetChangelog:
         result = await _make_client(handler).get_changelog("SYN-1", limit=0, order="asc")
 
         assert [e.id for e in result.items] == ["50001", "50002", "50003", "50004", "50005"]
-        assert len(seen) == 4  # 1 (discovery) + 2 + 2 + 1
+        assert len(seen) == 3  # 2 + 2 + 1: the first page doubles as discovery
 
     async def test_short_page_mid_range_stops_fetching_early(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1406,6 +1493,9 @@ class TestGetChangelog:
         assert message_fragment in str(exc_info.value)
 
 
+_SYNTHETIC_ATTACHMENT_SIZE = 4096
+
+
 def _synthetic_attachment(attachment_id: str, filename: str = "diagnostics.log") -> dict[str, Any]:
     return {
         "self": f"{BASE_URL}/rest/api/3/attachment/{attachment_id}",
@@ -1418,7 +1508,7 @@ def _synthetic_attachment(attachment_id: str, filename: str = "diagnostics.log")
             "active": True,
         },
         "created": "2025-08-26T09:55:40.906-0400",
-        "size": 4096,
+        "size": _SYNTHETIC_ATTACHMENT_SIZE,
         "mimeType": "text/plain",
         "content": f"{BASE_URL}/rest/api/3/attachment/content/{attachment_id}",
         "thumbnail": f"{BASE_URL}/rest/api/3/attachment/thumbnail/{attachment_id}",
@@ -1538,6 +1628,10 @@ def _attachment_download_handler(
     """
     if metadata is None:
         metadata = _synthetic_attachment("80001")
+    if metadata.get("size") == _SYNTHETIC_ATTACHMENT_SIZE:
+        # The client checks the bytes it received against the reported size, so
+        # a download that is not about size reports the size of what it serves.
+        metadata = {**metadata, "size": len(content_bytes)}
     attachment_id = str(metadata["id"])
     metadata_path = f"/rest/api/3/attachment/{attachment_id}"
     content_path = f"/rest/api/3/attachment/content/{attachment_id}"
@@ -1593,7 +1687,7 @@ class TestDownloadAttachment:
         assert result.attachment_id == "80001"
         assert result.filename == "diagnostics.log"
         assert result.mime_type == "text/plain"
-        assert result.size == 4096
+        assert result.size == len(b"synthetic attachment bytes")
         assert result.local_path == str(expected_path)
         assert expected_path.read_bytes() == b"synthetic attachment bytes"
         assert not expected_path.with_name("diagnostics.log.part").exists()
@@ -1664,7 +1758,10 @@ class TestDownloadAttachment:
             await client.download_attachment("80001")
         assert list(tmp_path.rglob("*")) == []
 
-    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "a\\b", ".", "..", ""])
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../etc", "a/b", "a\\b", ".", "..", "", "abc", "80001?x=1", "80001#", "8 1", 80001],
+    )
     async def test_invalid_attachment_id_raises_without_http_call(
         self, tmp_path: Path, bad_id: str
     ) -> None:
@@ -1815,6 +1912,122 @@ class TestDownloadAttachment:
         result = await client.download_attachment("80001")
 
         assert result.attachment_id == "80001"
+
+
+class _ChunkedStream(httpx2.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):  # type: ignore[override]
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _streaming_download_handler(
+    chunks: list[bytes], *, reported_size: int
+) -> tuple[Handler, list[httpx2.Request]]:
+    metadata = {**_synthetic_attachment("80001"), "size": reported_size}
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path == "/rest/api/3/attachment/80001":
+            return httpx2.Response(200, json=metadata)
+        return httpx2.Response(200, stream=_ChunkedStream(chunks))
+
+    return handler, seen
+
+
+class TestDownloadAttachmentSize:
+    async def test_an_oversized_attachment_is_refused_without_fetching_it(
+        self, tmp_path: Path
+    ) -> None:
+        metadata = {**_synthetic_attachment("80001"), "size": jira._MAX_ATTACHMENT_BYTES + 1}
+        handler, seen = _attachment_download_handler(metadata=metadata)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraValidationError, match="over 100 MB") as exc_info:
+            await client.download_attachment("80001")
+
+        assert str(jira._MAX_ATTACHMENT_BYTES + 1) in str(exc_info.value)
+        assert "tell the user" in str(exc_info.value)
+        assert [r.url.path for r in seen] == ["/rest/api/3/attachment/80001"]
+        assert list(tmp_path.rglob("*")) == []
+
+    async def test_an_attachment_exactly_at_the_limit_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "_MAX_ATTACHMENT_BYTES", 10)
+        handler, _ = _streaming_download_handler([b"0123456789"], reported_size=10)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert Path(result.local_path).read_bytes() == b"0123456789"
+
+    async def test_a_body_past_the_limit_is_cut_off_even_if_the_size_was_understated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "_MAX_ATTACHMENT_BYTES", 10)
+        handler, _ = _streaming_download_handler([b"01234", b"56789", b"X"], reported_size=5)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraValidationError, match="over 100 MB"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_a_body_that_differs_from_the_reported_size_is_an_error(
+        self, tmp_path: Path
+    ) -> None:
+        handler, _ = _streaming_download_handler([b"short"], reported_size=4096)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError, match="5 bytes.*4096 bytes"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_a_body_larger_than_the_reported_size_is_an_error(self, tmp_path: Path) -> None:
+        handler, _ = _streaming_download_handler([b"abcdef"], reported_size=3)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError, match="6 bytes.*3 bytes"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_chunks_are_buffered_into_few_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chunk = b"z" * 65536
+        chunks = [chunk] * 48  # 3 MiB
+        writes: list[int] = []
+        real_open = jira._open_binary_for_write
+
+        class _CountingFile:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def write(self, data: bytes) -> int:
+                writes.append(len(data))
+                return self._inner.write(data)
+
+            def close(self) -> None:
+                self._inner.close()
+
+        monkeypatch.setattr(jira, "_open_binary_for_write", lambda p: _CountingFile(real_open(p)))
+        handler, _ = _streaming_download_handler(chunks, reported_size=len(chunk) * 48)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert Path(result.local_path).read_bytes() == chunk * 48
+        assert sum(writes) == len(chunk) * 48
+        assert len(writes) == 3
 
 
 def _router(routes: dict[tuple[str, str], httpx2.Response]) -> tuple[Handler, list[httpx2.Request]]:
@@ -2581,6 +2794,156 @@ class TestRetryPolicy:
         assert no_real_sleeping == []
 
 
+class _FakeClock:
+    """A monotonic clock the test advances by hand, so the budget is exercised
+    without waiting: `_sleep` and each scripted response move it forward."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+        self.read_timeouts: list[float | None] = []
+        monkeypatch.setattr(jira, "_monotonic", lambda: self.now)
+        monkeypatch.setattr(jira, "_sleep", self._sleep)
+
+    async def _sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def handler(self, script: list[tuple[float, httpx2.Response | Exception]]) -> Handler:
+        """Answer each call after `duration` fake seconds, recording its read timeout."""
+        remaining = list(script)
+
+        def handle(request: httpx2.Request) -> httpx2.Response:
+            self.read_timeouts.append(request.extensions["timeout"]["read"])
+            if not remaining:
+                raise AssertionError("unscripted request")
+            duration, answer = remaining.pop(0)
+            self.now += duration
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        return handle
+
+
+class TestRequestBudget:
+    """One tool call, retries included, stays inside `_REQUEST_BUDGET` so the
+    caller gets our error before the MCP host gives up on the call."""
+
+    async def test_each_attempt_gets_only_the_budget_that_is_left(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(clock.handler([(20.0, _json_response(503, {}))] * 3))
+
+        with pytest.raises(errors.JiraServerError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5, 1.0]
+        assert clock.read_timeouts == [30.0, 24.5, 3.5]
+
+    async def test_a_retry_after_that_does_not_fit_is_reported_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler([(0.0, httpx2.Response(429, json={}, headers={"Retry-After": "50"}))])
+        )
+
+        with pytest.raises(errors.JiraRateLimitError, match="Retry after 50 seconds"):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == []
+        assert len(clock.read_timeouts) == 1
+
+    async def test_a_retry_after_that_fits_is_still_waited_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (1.0, httpx2.Response(429, json={}, headers={"Retry-After": "40"})),
+                    (1.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        await client.search_issues("project = SYN")
+
+        assert clock.slept == [40.0]
+
+    async def test_a_wait_that_lands_exactly_on_the_deadline_is_not_taken(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler([(0.0, httpx2.Response(429, json={}, headers={"Retry-After": "45"}))])
+        )
+
+        with pytest.raises(errors.JiraRateLimitError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == []
+
+    async def test_repeated_timeouts_stop_when_the_budget_runs_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (30.0, httpx2.ReadTimeout("slow")),
+                    (14.5, httpx2.ReadTimeout("slow")),
+                    (0.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        with pytest.raises(errors.JiraTimeoutError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5]
+        assert len(clock.read_timeouts) == 2
+
+    async def test_repeated_transport_failures_stop_when_the_budget_runs_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(
+            clock.handler(
+                [
+                    (44.0, httpx2.ConnectError("refused")),
+                    (0.4, httpx2.ConnectError("refused")),
+                    (0.0, _json_response(200, _SEARCH_OK)),
+                ]
+            )
+        )
+
+        with pytest.raises(errors.JiraNetworkError):
+            await client.search_issues("project = SYN")
+
+        assert clock.slept == [0.5]
+        assert len(clock.read_timeouts) == 2
+
+    async def test_a_normal_response_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(monkeypatch)
+        client = _make_client(clock.handler([(0.2, _json_response(200, _SEARCH_OK))]))
+
+        page = await client.search_issues("project = SYN")
+
+        assert page.items == []
+        assert clock.slept == []
+        assert clock.read_timeouts == [30.0]
+
+    async def test_the_attempt_timeout_never_exceeds_the_remaining_budget(self) -> None:
+        timeout = jira._attempt_timeout(2.0)
+
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (2.0, 2.0, 2.0, 2.0)
+        full = jira._attempt_timeout(45.0)
+        assert (full.connect, full.read, full.write, full.pool) == (10.0, 30.0, 30.0, 10.0)
+
+
 class TestBackoffSleep:
     async def test_sleep_actually_waits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The indirection every other test patches out still does its job."""
@@ -2737,7 +3100,7 @@ class TestOAuthGateway:
         assert seen == []
 
     async def test_download_fetches_content_through_the_gateway(self, tmp_path: Path) -> None:
-        metadata = _synthetic_attachment("80001")
+        metadata = {**_synthetic_attachment("80001"), "size": len(b"gateway bytes")}
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:

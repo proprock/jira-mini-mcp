@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
+import urllib.parse
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -115,9 +117,29 @@ _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
 
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# Caller-supplied path segments. Anything outside these shapes (`/`, `?`, `#`,
+# `..`) would let a crafted key steer the request, including a PUT, at another
+# Jira endpoint once httpx normalizes the URL. Matched with `fullmatch`.
+_ISSUE_KEY_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+")
+_ATTACHMENT_ID_PATTERN = re.compile(r"[0-9]+")
+
 # One connect budget and a longer per-read budget: Jira is the slow part,
 # but a stalled socket must not hang the agent for the library default.
 HTTP_TIMEOUT = httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+# Cap on one `_request` call, every attempt and wait included, so our
+# actionable error arrives before the typical 60 s tool timeout of an MCP host.
+# Without it three 30 s attempts plus backoff (or a long Retry-After) run ~90-150 s.
+_REQUEST_BUDGET = 45.0
+
+# An attachment is buffered to disk in full and handed to the agent as a local
+# file, so a runaway one would fill the temp directory; refuse it up front and,
+# in case Jira's reported size is wrong, while streaming.
+_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
+
+# Chunks from the network are small; coalescing them keeps the number of
+# worker-thread hops per download low.
+_WRITE_BUFFER_BYTES = 1024 * 1024
 
 # Waits before the second and third attempt. A table rather than computed
 # backoff: three attempts is the whole policy, and a table cannot grow a
@@ -163,11 +185,12 @@ def _joined_fields(fields: list[str] | None, default: tuple[str, ...]) -> str:
     return ",".join(fields)
 
 
-def _comment_sort_key(raw: Any) -> tuple[str, str]:
+def _created_id_sort_key(raw: Any) -> tuple[str, str]:
     """Best-effort `(created, id)` sort key for local tie-break resorting.
 
     An unparsable `created` or non-string `id` sorts as `""`: such a comment
-    gets dropped by `normalize_comment` anyway, so its position here is moot.
+    or changelog entry gets dropped by its normalizer anyway, so its position
+    here is moot.
     """
     if not isinstance(raw, dict):
         return ("", "")
@@ -178,28 +201,8 @@ def _comment_sort_key(raw: Any) -> tuple[str, str]:
             created_utc = to_utc_iso(created_raw)
         except ValueError:
             created_utc = ""
-    comment_id = raw.get("id")
-    return (created_utc, comment_id if isinstance(comment_id, str) else "")
-
-
-def _changelog_sort_key(raw: Any) -> tuple[str, str]:
-    """Best-effort `(created, id)` sort key for local tie-break resorting.
-
-    An unparsable `created` or non-string `id` sorts as `""`: such an entry
-    gets dropped by `normalize_changelog_entry` anyway, so its position here
-    is moot.
-    """
-    if not isinstance(raw, dict):
-        return ("", "")
-    created_raw = raw.get("created")
-    created_utc = ""
-    if isinstance(created_raw, str) and created_raw:
-        try:
-            created_utc = to_utc_iso(created_raw)
-        except ValueError:
-            created_utc = ""
-    entry_id = raw.get("id")
-    return (created_utc, entry_id if isinstance(entry_id, str) else "")
+    item_id = raw.get("id")
+    return (created_utc, item_id if isinstance(item_id, str) else "")
 
 
 def _sanitize_attachment_filename(filename: str) -> str:
@@ -221,24 +224,45 @@ def _sanitize_attachment_filename(filename: str) -> str:
 
 
 def _validate_attachment_id(attachment_id: str) -> None:
-    """Reject an `attachment_id` that would escape its cache subdirectory.
+    """Reject an `attachment_id` that is not a numeric Jira attachment id.
 
     Unlike a Jira-provided filename, `attachment_id` is a caller-supplied
-    public argument that becomes a path segment directly
+    public argument that becomes a URL path and a cache path segment
     (`<cache>/<attachment_id>/...`); it gets a strict validation error
     instead of best-effort sanitization.
     """
     if (
-        not attachment_id
-        or "/" in attachment_id
-        or "\\" in attachment_id
-        or attachment_id in (".", "..")
+        not isinstance(attachment_id, str)
+        or _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None
     ):
         raise errors.JiraValidationError(
-            "download_attachment 'attachment_id' must be a plain identifier "
-            "with no path separators.",
+            "download_attachment 'attachment_id' must be a numeric attachment id, "
+            "as get_attachments returns it.",
             operation="download_attachment",
         )
+
+
+def _attachment_too_large(size: int) -> errors.JiraValidationError:
+    return errors.JiraValidationError(
+        f"download_attachment refuses attachments over 100 MB; this one is {size} bytes. "
+        "Do not retry: tell the user this attachment is too large for this server to "
+        "fetch, so they can download it from Jira themselves and share it.",
+        operation="download_attachment",
+    )
+
+
+def _issue_segment(issue_key: str, *, operation: str) -> str:
+    """Validate `issue_key` and return it as one safe URL path segment.
+
+    The rejected value is left out of the message: it is the caller's raw
+    input, and echoing a crafted path back adds nothing.
+    """
+    if not isinstance(issue_key, str) or _ISSUE_KEY_PATTERN.fullmatch(issue_key) is None:
+        raise errors.JiraValidationError(
+            f"{operation} needs issue_key as an issue key like PROJ-123 or a numeric issue id.",
+            operation=operation,
+        )
+    return urllib.parse.quote(issue_key, safe="")
 
 
 def _open_binary_for_write(path: Path) -> BinaryIO:
@@ -276,6 +300,26 @@ def _incomplete_response_error(
 async def _sleep(seconds: float) -> None:
     """Indirection so tests can drive backoff without real waiting."""
     await asyncio.sleep(seconds)
+
+
+def _monotonic() -> float:
+    """Indirection so tests can drive the request budget without real waiting."""
+    return time.monotonic()
+
+
+def _attempt_timeout(remaining: float) -> httpx2.Timeout:
+    """`HTTP_TIMEOUT`, with no phase allowed to outlast the budget that is left."""
+    return httpx2.Timeout(
+        connect=min(10.0, remaining),
+        read=min(30.0, remaining),
+        write=min(30.0, remaining),
+        pool=min(10.0, remaining),
+    )
+
+
+def _fits(delay: float, deadline: float) -> bool:
+    """Whether waiting `delay` still leaves room for another attempt."""
+    return _monotonic() + delay < deadline
 
 
 def _retry_delay(response: httpx2.Response, attempt: int) -> float | None:
@@ -425,6 +469,7 @@ class JiraClient:
         """
         url = f"{await self._api_base()}{path}"
         replayable = method.upper() in _REPLAYABLE_METHODS
+        deadline = _monotonic() + _REQUEST_BUDGET
 
         attempt = 0
         while True:
@@ -434,10 +479,15 @@ class JiraClient:
             final = attempt == _MAX_ATTEMPTS
             try:
                 response = await self._client.request(
-                    method, url, params=params, json=json_body, auth=self._auth
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    auth=self._auth,
+                    timeout=_attempt_timeout(deadline - _monotonic()),
                 )
             except httpx2.TimeoutException as exc:
-                if final or not replayable:
+                if final or not replayable or not _fits(_BACKOFF_DELAYS[attempt - 1], deadline):
                     raise errors.JiraTimeoutError(
                         f"Request timed out for operation '{operation}'. "
                         "Check network connectivity and retry.",
@@ -447,7 +497,7 @@ class JiraClient:
                 await _sleep(_BACKOFF_DELAYS[attempt - 1])
                 continue
             except httpx2.TransportError as exc:
-                if final or not replayable:
+                if final or not replayable or not _fits(_BACKOFF_DELAYS[attempt - 1], deadline):
                     raise errors.JiraNetworkError(
                         f"A network error occurred for operation '{operation}'. "
                         "Check connectivity and retry.",
@@ -460,7 +510,7 @@ class JiraClient:
             retriable = response.status_code == 429 or (response.status_code >= 500 and replayable)
             if retriable and not final:
                 delay = _retry_delay(response, attempt)
-                if delay is not None:
+                if delay is not None and _fits(delay, deadline):
                     await _sleep(delay)
                     continue
 
@@ -575,13 +625,14 @@ class JiraClient:
         return SearchPage(items=items, next_page_token=next_page_token)
 
     async def get_issue(self, issue_key: str, fields: list[str] | None = None) -> IssueDetail:
+        segment = _issue_segment(issue_key, operation="get_issue")
         if fields is not None and len(fields) == 0:
             fields_param = _GET_ISSUE_EMPTY_FIELDS_SENTINEL
         else:
             fields_param = _joined_fields(fields, ISSUE_DEFAULT_FIELDS)
 
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="get_issue",
             issue_key=issue_key,
             params={"fields": fields_param},
@@ -620,7 +671,7 @@ class JiraClient:
             for field_name, (endpoint, normalizer) in _REFERENCE_FIELD_RESOLVERS.items():
                 if field_name in fields:
                     normalized_fields[field_name] = await self._resolve_reference_field(
-                        issue_key, field_name, endpoint, normalizer
+                        segment, field_name, endpoint, normalizer
                     )
 
         result = IssueDetail(key=key, fields=normalized_fields)
@@ -734,7 +785,7 @@ class JiraClient:
         # guarantees the deterministic tie-break the public contract requires.
         # This only fixes ties within the fetched window, not ones that
         # straddle its edge -- an accepted, documented limitation.
-        collected.sort(key=_comment_sort_key, reverse=(order == "desc"))
+        collected.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         return collected, total
 
     async def _fetch_comments_since(
@@ -781,7 +832,7 @@ class JiraClient:
                 break
             current_start += len(raw_comments)
 
-        matched.sort(key=_comment_sort_key, reverse=(order == "desc"))
+        matched.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         total = len(matched)
         window = matched[start_at:] if limit == 0 else matched[start_at : start_at + limit]
         return window, total
@@ -794,6 +845,7 @@ class JiraClient:
         order: str = "desc",
         since: str | None = None,
     ) -> Page[Comment]:
+        segment = _issue_segment(issue_key, operation="get_comments")
         if start_at < 0:
             raise errors.JiraValidationError(
                 "get_comments 'start_at' must be a non-negative value.",
@@ -825,10 +877,10 @@ class JiraClient:
                 ) from exc
 
         if since_utc is None:
-            raw_items, total = await self._fetch_comments_window(issue_key, start_at, limit, order)
+            raw_items, total = await self._fetch_comments_window(segment, start_at, limit, order)
         else:
             raw_items, total = await self._fetch_comments_since(
-                issue_key, start_at, limit, order, since_utc
+                segment, start_at, limit, order, since_utc
             )
 
         items: list[Comment] = []
@@ -852,8 +904,9 @@ class JiraClient:
         return result
 
     async def get_attachments(self, issue_key: str) -> list[Attachment]:
+        segment = _issue_segment(issue_key, operation="get_attachments")
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="get_attachments",
             issue_key=issue_key,
             params={"fields": "attachment"},
@@ -945,6 +998,9 @@ class JiraClient:
         assert isinstance(size, int)
         assert isinstance(content_url, str)
 
+        if size > _MAX_ATTACHMENT_BYTES:
+            raise _attachment_too_large(size)
+
         try:
             sanitized_filename = _sanitize_attachment_filename(filename)
         except ValueError as exc:
@@ -987,12 +1043,29 @@ class JiraClient:
                         response, operation="download_attachment", auth_hint=self._auth_hint
                     )
 
+                written = 0
+                buffer = bytearray()
                 fh = await asyncio.to_thread(_open_binary_for_write, part_path)
                 try:
                     async for chunk in response.aiter_bytes():
-                        await asyncio.to_thread(fh.write, chunk)
+                        written += len(chunk)
+                        if written > _MAX_ATTACHMENT_BYTES:
+                            raise _attachment_too_large(written)
+                        buffer += chunk
+                        if len(buffer) >= _WRITE_BUFFER_BYTES:
+                            await asyncio.to_thread(fh.write, bytes(buffer))
+                            buffer.clear()
+                    if buffer:
+                        await asyncio.to_thread(fh.write, bytes(buffer))
                 finally:
                     await asyncio.to_thread(fh.close)
+
+                if written != size:
+                    raise errors.JiraServerError(
+                        f"Jira sent {written} bytes for an attachment it reported as "
+                        f"{size} bytes; retry the download.",
+                        operation="download_attachment",
+                    )
         except httpx2.TimeoutException as exc:
             await _remove_part_file(part_path)
             raise errors.JiraTimeoutError(
@@ -1059,10 +1132,21 @@ class JiraClient:
         <= any real total) establishes the true total before it is used to
         compute that range.
         """
-        _, total = await self._fetch_changelog_page(issue_key, 0, 1)
-
-        if start_at >= total:
-            return [], total
+        collected: list[Any] = []
+        if order == "asc" and start_at == 0:
+            # startAt=0 never exceeds the real total, so the first working page
+            # doubles as the discovery fetch.
+            first_size = min(limit or CHANGELOG_PAGE_SIZE, CHANGELOG_PAGE_SIZE)
+            collected, total = await self._fetch_changelog_page(issue_key, 0, first_size)
+            if len(collected) < first_size:
+                collected.sort(key=_created_id_sort_key)
+                return collected, total
+            current = len(collected)
+        else:
+            _, total = await self._fetch_changelog_page(issue_key, 0, 1)
+            if start_at >= total:
+                return [], total
+            current = -1  # set from the range below
 
         remaining = limit if limit != 0 else total - start_at
         if order == "asc":
@@ -1071,9 +1155,9 @@ class JiraClient:
         else:
             high = total - start_at
             low = max(high - remaining, 0)
+        if current < 0:
+            current = low
 
-        collected: list[Any] = []
-        current = low
         while current < high:
             page_size = min(CHANGELOG_PAGE_SIZE, high - current)
             raw_values, _ = await self._fetch_changelog_page(issue_key, current, page_size)
@@ -1082,7 +1166,7 @@ class JiraClient:
             if len(raw_values) < page_size:
                 break
 
-        collected.sort(key=_changelog_sort_key, reverse=(order == "desc"))
+        collected.sort(key=_created_id_sort_key, reverse=(order == "desc"))
         return collected, total
 
     async def get_changelog(
@@ -1092,6 +1176,7 @@ class JiraClient:
         limit: int = 20,
         order: str = "desc",
     ) -> Page[ChangelogEntry]:
+        segment = _issue_segment(issue_key, operation="get_changelog")
         if start_at < 0:
             raise errors.JiraValidationError(
                 "get_changelog 'start_at' must be a non-negative value.",
@@ -1111,7 +1196,7 @@ class JiraClient:
                 issue_key=issue_key,
             )
 
-        raw_items, total = await self._fetch_changelog_window(issue_key, start_at, limit, order)
+        raw_items, total = await self._fetch_changelog_window(segment, start_at, limit, order)
 
         items: list[ChangelogEntry] = []
         problems: list[str] = []
@@ -1140,6 +1225,7 @@ class JiraClient:
         Jira answers the POST with the created comment object, identical to
         an item of the comment collection.
         """
+        segment = _issue_segment(issue_key, operation="add_comment")
         if not isinstance(body, str):
             raise errors.JiraValidationError(
                 "add_comment needs the comment body as Markdown text.",
@@ -1150,7 +1236,7 @@ class JiraClient:
 
         raw = await self._request(
             "POST",
-            f"/rest/api/3/issue/{issue_key}/comment",
+            f"/rest/api/3/issue/{segment}/comment",
             operation="add_comment",
             issue_key=issue_key,
             json_body={"body": document},
@@ -1179,6 +1265,7 @@ class JiraClient:
         named "In Development" -- and two transitions can reach one status,
         so an ambiguous match is reported rather than guessed.
         """
+        segment = _issue_segment(issue_key, operation="transition_issue")
         if not isinstance(to, str) or not to.strip():
             raise errors.JiraValidationError(
                 "transition_issue needs a target. Pass `to` as a transition name or "
@@ -1188,7 +1275,7 @@ class JiraClient:
             )
 
         body = await self._get(
-            f"/rest/api/3/issue/{issue_key}/transitions",
+            f"/rest/api/3/issue/{segment}/transitions",
             operation="transition_issue",
             issue_key=issue_key,
         )
@@ -1205,7 +1292,7 @@ class JiraClient:
 
         await self._request(
             "POST",
-            f"/rest/api/3/issue/{issue_key}/transitions",
+            f"/rest/api/3/issue/{segment}/transitions",
             operation="transition_issue",
             issue_key=issue_key,
             json_body=payload,
@@ -1250,6 +1337,7 @@ class JiraClient:
         issue is not re-fetched: a caller wanting confirmation calls
         `get_issue`.
         """
+        segment = _issue_segment(issue_key, operation="update_issue")
         if not isinstance(fields, dict) or not fields:
             raise errors.JiraValidationError(
                 "update_issue needs at least one field to change, for example "
@@ -1271,7 +1359,7 @@ class JiraClient:
 
         await self._request(
             "PUT",
-            f"/rest/api/3/issue/{issue_key}",
+            f"/rest/api/3/issue/{segment}",
             operation="update_issue",
             issue_key=issue_key,
             json_body={"fields": payload},

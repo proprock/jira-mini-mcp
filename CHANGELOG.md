@@ -7,6 +7,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-19
+
+### Changed
+
+- `download_attachment` refuses attachments over 100 MB, with an error that tells
+  the agent to report it to the user instead of retrying, and checks that the
+  bytes received match the size Jira reported, failing with an error and leaving
+  no file when they do not.
+- One tool call, retries included, now finishes within 45 seconds. When Jira
+  stays slow, unavailable, or asks for a longer `Retry-After`, the call fails
+  with the usual specific error instead of running past the MCP host's own
+  timeout (previously up to about 90 seconds, or 150 with `Retry-After`).
+
+### Fixed
+
+- `issue_key` and `attachment_id` are checked before the request. A key
+  containing `/`, `?`, `#`, or `..` is rejected with a clear error instead of
+  sending a request to a different Jira resource, which for `update_issue` was a
+  `PUT`. `attachment_id` must be numeric.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added
@@ -118,7 +138,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.3...v1.0.0
 [0.9.3]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...v0.9.3
