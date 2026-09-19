@@ -6,10 +6,11 @@ JIRA_BASE_URL, JIRA_OAUTH_CLIENT_ID, and JIRA_OAUTH_CLIENT_SECRET, and the
 OAuth flow itself lives in `oauth.py`. Credential values never leave this
 module in an error, log message, or repr.
 
-READ_ONLY_MODE and DISABLE_STRUCTURED_OUTPUT are optional settings, parsed
-here but deliberately kept out of JiraConfig: they select which MCP tools
-get registered and how they report their results, which is server behavior
-rather than a Jira credential, and JiraClient must stay unaware of both.
+READ_ONLY_MODE, STRUCTURED_OUTPUT, and DISABLE_STRUCTURED_OUTPUT are optional
+settings, parsed here but deliberately kept out of JiraConfig: they select
+which MCP tools get registered and how they report their results, which is
+server behavior rather than a Jira credential, and JiraClient must stay
+unaware of all three.
 """
 
 from __future__ import annotations
@@ -50,9 +51,11 @@ AuthMethod = Literal["api_token", "oauth"]
 _AUTH_METHOD_VAR = "JIRA_AUTH_METHOD"
 _AUTH_METHODS: tuple[AuthMethod, ...] = ("api_token", "oauth")
 
+_SWITCH_TRUE = frozenset({"true", "1", "on"})
+_SWITCH_FALSE = frozenset({"false", "0", "off", ""})
+
 _READ_ONLY_MODE_VAR = "READ_ONLY_MODE"
-_READ_ONLY_MODE_TRUE = frozenset({"true", "1", "on"})
-_READ_ONLY_MODE_FALSE = frozenset({"false", "0", "off", ""})
+_STRUCTURED_OUTPUT_VAR = "STRUCTURED_OUTPUT"
 
 _DISABLE_STRUCTURED_OUTPUT_VAR = "DISABLE_STRUCTURED_OUTPUT"
 
@@ -136,29 +139,49 @@ def load_oauth_config(env: Mapping[str, str] = os.environ) -> OAuthConfig:
     )
 
 
-def load_read_only_mode(env: Mapping[str, str] = os.environ) -> bool:
-    """Parse the optional READ_ONLY_MODE switch.
+def _parse_switch(env: Mapping[str, str], name: str, guidance: str) -> bool:
+    """Read an on/off setting: absent, empty, and the false spellings are off.
 
-    Absent, empty, and the false spellings all disable it; an unrecognized
-    value is a startup error rather than a silent fallback, because
-    silently ignoring a typo here would register write tools an operator
-    believed they had turned off.
+    An unrecognized value is a startup error rather than a silent fallback,
+    because silently ignoring a typo would leave an operator with the opposite
+    of the behavior they believed they had chosen.
     """
-    raw = env.get(_READ_ONLY_MODE_VAR)
+    raw = env.get(name)
     if raw is None:
         return False
 
     value = raw.strip().lower()
-    if value in _READ_ONLY_MODE_TRUE:
+    if value in _SWITCH_TRUE:
         return True
-    if value in _READ_ONLY_MODE_FALSE:
+    if value in _SWITCH_FALSE:
         return False
 
-    raise ConfigError(
-        f"{_READ_ONLY_MODE_VAR} is set to {raw!r}, which is not a recognized value. "
+    raise ConfigError(f"{name} is set to {raw!r}, which is not a recognized value. {guidance}")
+
+
+def load_read_only_mode(env: Mapping[str, str] = os.environ) -> bool:
+    """Parse the optional READ_ONLY_MODE switch."""
+    return _parse_switch(
+        env,
+        _READ_ONLY_MODE_VAR,
         "Set it to true, 1, or on to register read-only tools only, or to "
         "false, 0, or off to register every tool (case-insensitive); "
-        "leaving it unset also registers every tool."
+        "leaving it unset also registers every tool.",
+    )
+
+
+def load_structured_output(env: Mapping[str, str] = os.environ) -> bool:
+    """Parse the optional STRUCTURED_OUTPUT switch (off unless set).
+
+    Off means every result travels once, as JSON text in `content`; on adds the
+    same JSON as `structuredContent` with an `outputSchema`.
+    """
+    return _parse_switch(
+        env,
+        _STRUCTURED_OUTPUT_VAR,
+        "Set it to true, 1, or on to also send structuredContent and outputSchema, "
+        "or to false, 0, or off (case-insensitive) to send each result once, in "
+        "content; leaving it unset also sends it once.",
     )
 
 

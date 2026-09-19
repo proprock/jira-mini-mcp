@@ -85,9 +85,10 @@ not that the toolset is right.
 
 ## Structured-output savings eval
 
-`DISABLE_STRUCTURED_OUTPUT` (see `PROJECT-CONTRACTS.md`'s Configuration
-section) lets an operator stop a tool from duplicating its JSON as both
-`content` and `structuredContent`. Extra 1 in `PLAN.agents.md` deliberately
+`STRUCTURED_OUTPUT` and `DISABLE_STRUCTURED_OUTPUT` (see
+`PROJECT-CONTRACTS.md`'s Configuration section) decide whether a tool
+duplicates its JSON as both `content` and `structuredContent`; the server
+default is not to. This eval compares the two modes. Extra 1 in `PLAN.agents.md` deliberately
 did not claim that duplication costs anything -- this eval is the
 measurement, not an assumption. It never claims the savings *matter* to any
 given host; it only reports how large they are.

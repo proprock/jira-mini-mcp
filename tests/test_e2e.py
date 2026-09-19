@@ -54,7 +54,10 @@ async def _connected(handler: Handler, tmp_path: Path) -> AsyncIterator[Client]:
             await http.aclose()
 
     server = create_server(
-        lifespan=lifespan, read_only_mode=False, disable_structured_output=frozenset()
+        lifespan=lifespan,
+        read_only_mode=False,
+        structured_output=True,
+        disable_structured_output=frozenset(),
     )
     async with Client(server) as client:
         yield client

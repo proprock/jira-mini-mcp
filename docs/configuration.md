@@ -15,7 +15,8 @@ Every setting `jira-mini-mcp` reads, all from the environment. The
 | `JIRA_OAUTH_CLIENT_ID` | with `oauth` | Client ID of your OAuth 2.0 (3LO) app; see [oauth.md](oauth.md) |
 | `JIRA_OAUTH_CLIENT_SECRET` | with `oauth` | Secret of that app |
 | `READ_ONLY_MODE` | no | `true`, `1`, `on` registers only the six read tools |
-| `DISABLE_STRUCTURED_OUTPUT` | no | Comma-separated tool names that return `content` only; see [Cheaper output](#cheaper-output) |
+| `STRUCTURED_OUTPUT` | no | `true`, `1`, `on` also sends `structuredContent` and an `outputSchema`; off by default, see [Cheaper output](#cheaper-output) |
+| `DISABLE_STRUCTURED_OUTPUT` | no | With `STRUCTURED_OUTPUT=true`, comma-separated tool names that still return `content` only |
 
 Configuration is validated at startup, and an error names the missing setting
 without printing its value or your Jira URL. Settings of the method you did not
@@ -48,42 +49,55 @@ write tools.
 
 ## Cheaper output
 
-By default every tool returns its result twice, as the MCP spec asks: the JSON
-as text in `content`, and the same JSON as `structuredContent`, plus an
-`outputSchema` advertised for each tool. A host that forwards both copies to the
-model pays for the same data twice. `DISABLE_STRUCTURED_OUTPUT` names the tools
-that should return `content` only:
+By default every tool returns its result once: the JSON as text in `content`.
+Setting `STRUCTURED_OUTPUT=true` (or `1`, `on`) also sends the same JSON as
+`structuredContent` and advertises an `outputSchema` for each tool, as the MCP
+spec allows. A host that forwards both copies to the model pays for the same
+data twice.
 
-```text
-DISABLE_STRUCTURED_OUTPUT=search_issues,get_issue,get_comments,get_changelog
-```
-
-An empty or absent value changes nothing. A name that is not one of the nine
-tools stops startup and lists the valid ones, so a typo never leaves you
-believing a payload shrank when it did not.
-
-**What it saves.** `evals/structured_output_savings.py` measures the exact result
-this server sends in both modes. Across replayed agent sessions on synthetic
-tickets it cuts the `CallToolResult` by about 35-40% (36.6% for a weighted mix of
-all nine tools), and by 42-43% on real tickets from a non-production site. The
-largest read tools gain the most: `get_comments` about 42%, `get_issue` about
+**Why it is off.** Every tool returns a free-form `dict[str, Any]`, so the
+`outputSchema` cannot describe a result's fields, and a coding agent reads the
+text either way. The duplicate is the price of a schema that says almost
+nothing. `evals/structured_output_savings.py` measures the exact result this
+server sends in both modes. Across replayed agent sessions on synthetic tickets
+the duplicate is about 35-40% of the `CallToolResult` (36.6% for a weighted mix
+of all nine tools), and 42-43% on real tickets from a non-production site. The
+largest read tools carry the most: `get_comments` about 42%, `get_issue` about
 41%, `search_issues` about 35%. Two caveats: these are bytes on the wire, not
 billed tokens, and they only matter where the host actually sends both copies to
 the model. Run the script for your own numbers; see
 [`evals/README.md`](../evals/README.md).
 
-**Why it is safe for agent work.**
+**When to turn it on.** A host or pipeline that consumes results as typed data
+-- validating or parsing `structuredContent` in code -- needs it:
 
-- `content` carries the *same* compact JSON, byte for byte, whether or not a tool
-  is named. A model reads that text either way and sees the same fields,
-  Markdown, timestamps, and pagination values.
-- Nothing about the contract changes: arguments, defaults, pagination, and error
-  behavior are identical. Errors were always text-only, with the sanitized
-  partial result inline, so failure handling is unaffected.
-- What you give up is the machine-checkable `outputSchema` and typed
+```text
+STRUCTURED_OUTPUT=true
+```
+
+Anything else than `true`, `1`, `on`, `false`, `0`, `off`, or empty (matched
+ignoring case) stops startup rather than quietly choosing a mode.
+
+**Narrowing it.** With `STRUCTURED_OUTPUT=true`, `DISABLE_STRUCTURED_OUTPUT` names
+the tools that should still return `content` only:
+
+```text
+STRUCTURED_OUTPUT=true
+DISABLE_STRUCTURED_OUTPUT=search_issues,get_issue,get_comments,get_changelog
+```
+
+An empty or absent value changes nothing. A name that is not one of the nine
+tools stops startup and lists the valid ones, so a typo never leaves you
+believing a payload shrank when it did not. Without `STRUCTURED_OUTPUT=true` the
+list has no effect, and startup says so on stderr.
+
+**What stays the same.**
+
+- `content` carries the *same* compact JSON, byte for byte, in every mode. A
+  model reads that text and sees the same fields, Markdown, timestamps, and
+  pagination values.
+- Arguments, defaults, pagination, and error behavior are identical. Errors were
+  always text-only, with the sanitized partial result inline.
+- What you give up by default is the machine-checkable `outputSchema` and typed
   `structuredContent`, which only a programmatic client that validates or
-  parses results in code makes use of. A coding agent that reads tool output
-  as text does not.
-
-Turn it off for the large read tools, where the saving is real. Leave it on for a
-tool whose result a host or pipeline consumes as typed data.
+  parses results in code makes use of.

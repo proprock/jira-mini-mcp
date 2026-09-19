@@ -45,6 +45,7 @@ from jira_mini_mcp.auth import (
     load_disable_structured_output,
     load_oauth_config,
     load_read_only_mode,
+    load_structured_output,
 )
 from jira_mini_mcp.jira import (
     HTTP_TIMEOUT,
@@ -535,17 +536,22 @@ def create_server(
         [MCPServer[AppContext]], AbstractAsyncContextManager[AppContext]
     ] = app_lifespan,
     read_only_mode: bool | None = None,
+    structured_output: bool | None = None,
     disable_structured_output: frozenset[str] | None = None,
 ) -> MCPServer[AppContext]:
     """Build the server with its tools registered but not yet running.
 
-    `read_only_mode` defaults to the READ_ONLY_MODE environment value, and
-    `disable_structured_output` defaults to the DISABLE_STRUCTURED_OUTPUT
-    environment value, so an unrecognized setting stops startup here --
-    before any tool is registered -- rather than at the first call.
+    `read_only_mode`, `structured_output`, and `disable_structured_output`
+    default to the READ_ONLY_MODE, STRUCTURED_OUTPUT, and
+    DISABLE_STRUCTURED_OUTPUT environment values, so an unrecognized setting
+    stops startup here -- before any tool is registered -- rather than at the
+    first call. Structured output is off unless `structured_output` says
+    otherwise; the disable list then removes it from the tools it names.
     """
     if read_only_mode is None:
         read_only_mode = load_read_only_mode()
+    if structured_output is None:
+        structured_output = load_structured_output()
     if disable_structured_output is None:
         disable_structured_output = load_disable_structured_output(
             valid_tool_names=frozenset(_tool_name(spec) for spec in _TOOL_SPECS)
@@ -553,14 +559,18 @@ def create_server(
 
     server: MCPServer[AppContext] = MCPServer(name="jira-mini-mcp", lifespan=lifespan)
     for spec in _registered_tools(_TOOL_SPECS, read_only_mode=read_only_mode):
-        structured_output = spec.structured_output
-        if _tool_name(spec) in disable_structured_output:
-            structured_output = False
+        # False drops outputSchema and structuredContent; None leaves the SDK's
+        # own behavior (a schema for every tool that returns a dict).
+        tool_structured_output = (
+            spec.structured_output
+            if structured_output and _tool_name(spec) not in disable_structured_output
+            else False
+        )
         server.add_tool(
             spec.fn,
             description=spec.description,
             annotations=spec.annotations,
-            structured_output=structured_output,
+            structured_output=tool_structured_output,
         )
 
     return server
@@ -656,11 +666,19 @@ def main(argv: Sequence[str] | None = None) -> None:
             "jira-mini-mcp: READ_ONLY_MODE enabled; registering read-only tools only.",
             file=sys.stderr,
         )
+    structured_output = load_structured_output()
     disable_structured_output = load_disable_structured_output(
         valid_tool_names=frozenset(_tool_name(spec) for spec in _TOOL_SPECS)
     )
+    if disable_structured_output and not structured_output:
+        print(
+            "jira-mini-mcp: DISABLE_STRUCTURED_OUTPUT has no effect unless "
+            "STRUCTURED_OUTPUT=true; structured output is already off.",
+            file=sys.stderr,
+        )
     create_server(
         read_only_mode=read_only_mode,
+        structured_output=structured_output,
         disable_structured_output=disable_structured_output,
     ).run()
 

@@ -111,7 +111,10 @@ partial result. The future MCP adapter renders this as
 
 ## Normalization and response shapes
 
-Return typed structures so MCPServer can publish and validate output schemas.
+Build results from typed structures and hand MCPServer plain JSON-ready
+dictionaries. Structured output is off by default (`STRUCTURED_OUTPUT`): the
+result travels once, as JSON text in `content`, because a free-form
+`dict[str, Any]` gives an `outputSchema` nothing to describe.
 Do not also construct a second Markdown rendering of the same result. Use
 Markdown only for normalized rich-text values such as issue descriptions and
 comment bodies.

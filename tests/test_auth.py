@@ -136,6 +136,32 @@ class TestLoadReadOnlyMode:
         assert "example.atlassian.net" not in message
 
 
+class TestLoadStructuredOutput:
+    """STRUCTURED_OUTPUT is MCP response-shape behavior, off unless asked for."""
+
+    def test_absent_variable_leaves_it_off(self) -> None:
+        assert auth.load_structured_output(env=VALID_ENV) is False
+
+    @pytest.mark.parametrize("raw", ["true", "TRUE", "1", "on", " On "])
+    def test_recognized_true_spellings_turn_it_on(self, raw: str) -> None:
+        assert auth.load_structured_output(env=dict(VALID_ENV, STRUCTURED_OUTPUT=raw)) is True
+
+    @pytest.mark.parametrize("raw", ["false", "False", "0", "off", "OFF", "", "   "])
+    def test_recognized_false_spellings_and_empty_leave_it_off(self, raw: str) -> None:
+        assert auth.load_structured_output(env=dict(VALID_ENV, STRUCTURED_OUTPUT=raw)) is False
+
+    @pytest.mark.parametrize("raw", ["yes", "no", "enabled", "2", "tru e"])
+    def test_unrecognized_value_names_itself_the_setting_and_the_spellings(self, raw: str) -> None:
+        with pytest.raises(auth.ConfigError) as exc_info:
+            auth.load_structured_output(env=dict(VALID_ENV, STRUCTURED_OUTPUT=raw))
+
+        message = str(exc_info.value)
+        assert "STRUCTURED_OUTPUT" in message
+        assert raw in message
+        for spelling in ("true", "1", "on", "false", "0", "off"):
+            assert spelling in message
+
+
 class TestLoadDisableStructuredOutput:
     """DISABLE_STRUCTURED_OUTPUT is MCP response-shape behavior, not a Jira
     credential: it is parsed beside JiraConfig, never inside it."""

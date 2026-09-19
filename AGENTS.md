@@ -37,8 +37,9 @@ suitable for direct installation from GitHub.
   requires exactly `JIRA_BASE_URL`, `JIRA_OAUTH_CLIENT_ID`, and
   `JIRA_OAUTH_CLIENT_SECRET`, with the user's own OAuth 2.0 (3LO) app -- never a
   client shipped in this repository. Do not add another required setup
-  parameter casually. `JIRA_AUTH_METHOD`, `READ_ONLY_MODE`, and
-  `DISABLE_STRUCTURED_OUTPUT` are the settings already approved as optional;
+  parameter casually. `JIRA_AUTH_METHOD`, `READ_ONLY_MODE`,
+  `STRUCTURED_OUTPUT`, and `DISABLE_STRUCTURED_OUTPUT` are the settings already
+  approved as optional;
   any further optional parameter still needs the user's explicit approval.
 - Never hardcode or log Jira URLs, credentials, authorization headers, OAuth
   secrets or tokens, cloud IDs, or attachment contents. Redact sensitive values in errors.

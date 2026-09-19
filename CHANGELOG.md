@@ -7,6 +7,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-20
+
 ### Added
 
 - `get_issue(fields=["transitions"])` lists the moves available now, each with
@@ -19,6 +21,17 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   account id and `"me"`. The name is looked up among active users; a name that
   matches several people is an error listing them by name and account id, and
   an email is never shown in a message.
+
+### Changed
+
+- **Behavior change:** tools no longer return `structuredContent` or advertise
+  an `outputSchema` by default; each result is sent once, as the same JSON text
+  in `content`. The duplicate was about 35-40% of the payload for a schema that
+  described no fields (every tool returns a free-form object). Set
+  `STRUCTURED_OUTPUT=true` (or `1`, `on`) to restore the previous behavior; an
+  unrecognized value stops startup.
+- `DISABLE_STRUCTURED_OUTPUT` now narrows `STRUCTURED_OUTPUT=true`. Without it
+  the list has no effect, and startup says so on stderr.
 
 ## [1.2.0] - 2026-09-19
 
@@ -151,7 +164,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.3...v1.0.0

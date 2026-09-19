@@ -363,8 +363,13 @@ async def _server_for(fake: Any, *, disabled: frozenset[str]) -> MCPServer[AppCo
     async def fake_lifespan(_server: MCPServer[AppContext]):
         yield AppContext(jira_client=cast(JiraClient, fake))
 
+    # Structured output is switched on so `disabled` is what separates the two
+    # modes being compared; the server's own default is off.
     return create_server(
-        lifespan=fake_lifespan, read_only_mode=False, disable_structured_output=disabled
+        lifespan=fake_lifespan,
+        read_only_mode=False,
+        structured_output=True,
+        disable_structured_output=disabled,
     )
 
 

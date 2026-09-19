@@ -37,9 +37,10 @@ context it needs for a ticket, the three ways to answer back, and nothing else.
 - **Compact, predictable output** - stable JSON schemas, Markdown for rich
   text, no `null` spam, no `self` URLs, emails, or avatars; see
   [what the tools return](https://github.com/proprock/jira-mini-mcp/blob/master/docs/tools.md).
-- **Up to ~40% less output on the wire** - turn off the duplicated
-  `structuredContent` per tool with `DISABLE_STRUCTURED_OUTPUT`; the model still
-  gets the same JSON. See [Cheaper output](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md#cheaper-output).
+- **Roughly 40% less output on the wire** - each result is sent once, as JSON
+  in `content`, rather than again as `structuredContent`; set
+  `STRUCTURED_OUTPUT=true` if your host needs the typed copy. See
+  [Cheaper output](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md#cheaper-output).
 - **Nothing is silently cut short** - exact totals on comments and changelog,
   cursor paging on search, and `limit=0` to fetch the rest. A failed request is
   an error, never an empty list.
@@ -111,7 +112,7 @@ With an API token, three values:
 | `JIRA_API_TOKEN` | A [Jira Cloud API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
 
 Add `READ_ONLY_MODE=true` to withhold the write tools. Every setting, including
-`DISABLE_STRUCTURED_OUTPUT`, is in [configuration.md](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md).
+`STRUCTURED_OUTPUT`, is in [configuration.md](https://github.com/proprock/jira-mini-mcp/blob/master/docs/configuration.md).
 
 > [!NOTE]
 > **Prefer OAuth to a stored token?** Set `JIRA_AUTH_METHOD=oauth`, register a
