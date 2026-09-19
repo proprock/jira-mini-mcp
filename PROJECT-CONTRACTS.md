@@ -522,15 +522,30 @@ revoke any Jira permission; the API token's own account permissions still apply.
 Enabling it writes one line to stderr at startup naming the mode, and never a
 configured value.
 
+`STRUCTURED_OUTPUT` is optional and also not a credential. It is off unless
+set: every tool then returns its result once, as compact JSON text in `content`,
+with no `structuredContent` and no `outputSchema`. The tools return
+`dict[str, Any]`, so an `outputSchema` cannot describe their fields; the
+duplicate cost roughly 35-40% of the payload (`evals/structured_output_savings.py`)
+for a schema no coding agent reads. `true`, `1`, or `on` restores the
+duplicate -- `structuredContent` plus an `outputSchema` on every tool -- for a
+host that parses results in code. `false`, `0`, `off`, and an empty value are
+off; matching ignores case and surrounding whitespace, and any other value is a
+startup `ConfigError` naming the value and the accepted spellings, never a silent
+fallback. `content` is byte-for-byte identical either way, and the setting
+prints no startup announcement.
+
 `DISABLE_STRUCTURED_OUTPUT` is optional and also not a credential.
-It names tools, comma-separated, that should return `content` only and skip
-`structuredContent`/`outputSchema` entirely:
+With `STRUCTURED_OUTPUT` on, it names tools, comma-separated, that should
+return `content` only and skip `structuredContent`/`outputSchema`:
 
 ```text
 DISABLE_STRUCTURED_OUTPUT
 ```
 
-An absent or empty value changes nothing: every tool keeps structured output.
+An absent or empty value changes nothing. Without `STRUCTURED_OUTPUT=true` it
+has no effect, because structured output is already off; startup then writes one
+line to stderr saying so, naming no value.
 Each named tool must exactly match one of the tools this server registers;
 surrounding whitespace around each name is ignored, and matching is
 case-sensitive since tool names are fixed identifiers, not prose. An

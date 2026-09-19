@@ -64,8 +64,14 @@
           "format": "string"
         },
         {
+          "name": "STRUCTURED_OUTPUT",
+          "description": "Set to true, 1, or on to also send structuredContent and an outputSchema; by default each result is sent once, in content",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
           "name": "DISABLE_STRUCTURED_OUTPUT",
-          "description": "Comma-separated tool names that return content only, without structuredContent",
+          "description": "With STRUCTURED_OUTPUT=true, comma-separated tool names that still return content only, without structuredContent",
           "isRequired": false,
           "format": "string"
         }

@@ -7,9 +7,9 @@ Response shapes, default fields, pagination, and worked examples for
 
 ## Response format
 
-Structured JSON with stable output schemas, and no second human-readable
-rendering of the same result (the JSON is sent as text and as
-`structuredContent`; see [Cheaper output](configuration.md#cheaper-output) to send it once).
+Compact JSON, and no second human-readable rendering of the same result. The
+JSON is sent once, as text in `content`; `STRUCTURED_OUTPUT=true` also sends it as
+`structuredContent` (see [Cheaper output](configuration.md#cheaper-output)).
 Jira's rich text becomes Markdown inside the
 corresponding string field. Timestamps normalize to UTC ISO-8601 with a `Z`.
 Users are `account_id` and `display_name` only - no email, avatar, or `self` URL.

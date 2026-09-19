@@ -20,6 +20,17 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matches several people is an error listing them by name and account id, and
   an email is never shown in a message.
 
+### Changed
+
+- **Behavior change:** tools no longer return `structuredContent` or advertise
+  an `outputSchema` by default; each result is sent once, as the same JSON text
+  in `content`. The duplicate was about 35-40% of the payload for a schema that
+  described no fields (every tool returns a free-form object). Set
+  `STRUCTURED_OUTPUT=true` (or `1`, `on`) to restore the previous behavior; an
+  unrecognized value stops startup.
+- `DISABLE_STRUCTURED_OUTPUT` now narrows `STRUCTURED_OUTPUT=true`. Without it
+  the list has no effect, and startup says so on stderr.
+
 ## [1.2.0] - 2026-09-19
 
 ### Changed
