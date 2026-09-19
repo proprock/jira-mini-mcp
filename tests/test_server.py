@@ -212,19 +212,21 @@ class FakeJiraClient:
         )
 
 
-def _server_with(fake: FakeJiraClient) -> MCPServer[AppContext]:
+def _server_with(fake: FakeJiraClient, *, structured_output: bool = True) -> MCPServer[AppContext]:
     @asynccontextmanager
     async def fake_lifespan(_server: MCPServer[AppContext]):
         # FakeJiraClient duck-types JiraClient's public surface; cast() tells
         # the type checker that on our behalf.
         yield AppContext(jira_client=cast(JiraClient, fake))
 
-    # Explicit read_only_mode/disable_structured_output keep every adapter
-    # test independent of whatever READ_ONLY_MODE/DISABLE_STRUCTURED_OUTPUT
-    # the developer's shell happens to export.
+    # Explicit settings keep every adapter test independent of whatever
+    # READ_ONLY_MODE/STRUCTURED_OUTPUT/DISABLE_STRUCTURED_OUTPUT the developer's
+    # shell happens to export. Structured output is on because these tests assert
+    # on the structured payload; its default (off) has its own tests.
     return create_server(
         lifespan=fake_lifespan,
         read_only_mode=False,
+        structured_output=structured_output,
         disable_structured_output=frozenset(),
     )
 
@@ -1124,6 +1126,142 @@ class TestReadOnlyModeGate:
         assert captured.out == ""
 
 
+class TestStructuredOutputSetting:
+    """STRUCTURED_OUTPUT is off by default: each result travels once, as JSON
+    text in `content`. `true` adds `structuredContent` and an `outputSchema`."""
+
+    @staticmethod
+    def _configure(
+        monkeypatch: pytest.MonkeyPatch, raw: str | None, disabled: str | None = None
+    ) -> None:
+        monkeypatch.setenv("JIRA_BASE_URL", "https://synthetic-tenant.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
+        monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        for name, value in (("STRUCTURED_OUTPUT", raw), ("DISABLE_STRUCTURED_OUTPUT", disabled)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    @pytest.mark.parametrize("raw", [None, "", "false", "0", "OFF"])
+    async def test_by_default_no_tool_has_an_output_schema(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str | None
+    ) -> None:
+        self._configure(monkeypatch, raw)
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert [tool.name for tool in tools] == list(TOOL_NAMES)
+        assert [tool.name for tool in tools if tool.output_schema is not None] == []
+
+    @pytest.mark.parametrize("raw", ["true", "1", " ON "])
+    async def test_enabled_gives_every_tool_an_output_schema(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        self._configure(monkeypatch, raw)
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert [tool.name for tool in tools if tool.output_schema is None] == []
+
+    async def test_the_disable_list_narrows_an_enabled_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, "true", "add_comment,get_issue")
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert {tool.name for tool in tools if tool.output_schema is None} == {
+            "add_comment",
+            "get_issue",
+        }
+
+    async def test_the_disable_list_alone_changes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure(monkeypatch, None, "add_comment")
+
+        async with Client(create_server()) as client:
+            tools = (await client.list_tools()).tools
+
+        assert all(tool.output_schema is None for tool in tools)
+
+    async def test_a_call_returns_the_json_once_by_default_and_twice_when_enabled(self) -> None:
+        arguments = {"issue_key": "SYN-1", "body": "text"}
+        results = {}
+        for enabled in (False, True):
+            async with Client(_server_with(FakeJiraClient(), structured_output=enabled)) as client:
+                results[enabled] = await client.call_tool("add_comment", arguments)
+
+        assert results[False].structured_content is None
+        assert results[True].structured_content is not None
+        assert json.loads(_text_of(results[False])) == results[True].structured_content
+        assert _text_of(results[False]) == _text_of(results[True])
+
+    @pytest.mark.parametrize("raw", ["yes", "enabled", "2", "tru e"])
+    def test_an_unrecognized_value_stops_startup(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        self._configure(monkeypatch, raw)
+
+        with pytest.raises(ConfigError) as exc_info:
+            create_server()
+
+        assert "STRUCTURED_OUTPUT" in str(exc_info.value)
+        assert raw in str(exc_info.value)
+
+    def test_explicit_argument_overrides_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("STRUCTURED_OUTPUT", "not-a-boolean")
+
+        assert (
+            create_server(
+                read_only_mode=False,
+                structured_output=False,
+                disable_structured_output=frozenset(),
+            )
+            is not None
+        )
+
+    def test_a_disable_list_without_the_switch_is_announced_on_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._configure(monkeypatch, None, "add_comment")
+        monkeypatch.setattr(server_module, "create_server", _stub_create_server)
+
+        server_module.main([])
+
+        captured = capsys.readouterr()
+        assert (
+            "DISABLE_STRUCTURED_OUTPUT has no effect unless STRUCTURED_OUTPUT=true" in captured.err
+        )
+        assert captured.out == ""
+        for secret in ("super-secret-token", "agent@example.com", "synthetic-tenant"):
+            assert secret not in captured.err
+
+    @pytest.mark.parametrize(
+        ("raw", "disabled"), [("true", "add_comment"), (None, None), ("true", None)]
+    )
+    def test_no_announcement_when_nothing_is_ineffective(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        raw: str | None,
+        disabled: str | None,
+    ) -> None:
+        self._configure(monkeypatch, raw, disabled)
+        monkeypatch.setattr(server_module, "create_server", _stub_create_server)
+
+        server_module.main([])
+
+        assert capsys.readouterr().err == ""
+
+
 class TestDisableStructuredOutput:
     """DISABLE_STRUCTURED_OUTPUT selects which tools skip structuredContent.
 
@@ -1137,6 +1275,8 @@ class TestDisableStructuredOutput:
         monkeypatch.setenv("JIRA_EMAIL", "agent@example.com")
         monkeypatch.setenv("JIRA_API_TOKEN", "super-secret-token")
         monkeypatch.delenv("READ_ONLY_MODE", raising=False)
+        # The disable list only means something once structured output is on.
+        monkeypatch.setenv("STRUCTURED_OUTPUT", "true")
         if raw is None:
             monkeypatch.delenv("DISABLE_STRUCTURED_OUTPUT", raising=False)
         else:
@@ -1200,6 +1340,7 @@ class TestDisableStructuredOutput:
         disabled_server = create_server(
             lifespan=fake_lifespan,
             read_only_mode=False,
+            structured_output=True,
             disable_structured_output=frozenset({"add_comment"}),
         )
         async with Client(disabled_server) as client:

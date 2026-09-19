@@ -34,6 +34,7 @@ SETTINGS = (
     "JIRA_OAUTH_CLIENT_ID",
     "JIRA_OAUTH_CLIENT_SECRET",
     "READ_ONLY_MODE",
+    "STRUCTURED_OUTPUT",
     "DISABLE_STRUCTURED_OUTPUT",
 )
 
@@ -95,7 +96,7 @@ def test_issue_default_fields_match_tools_doc() -> None:
 
 def test_settings_read_by_the_server_are_the_documented_ones() -> None:
     source = (ROOT / "src" / "jira_mini_mcp" / "auth.py").read_text(encoding="utf-8")
-    read = set(re.findall(r'"((?:JIRA|READ|DISABLE)_[A-Z_]+)"', source))
+    read = set(re.findall(r'"((?:JIRA|READ|STRUCTURED|DISABLE)_[A-Z_]+)"', source))
     assert read == set(SETTINGS)
 
 
