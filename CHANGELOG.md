@@ -9,6 +9,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `get_issue` returns `field_names`, mapping each returned `customfield_*` id to
+  its display name, whenever `fields` names a custom field.
 - `update_issue` accepts an email or a display name as `assignee`, besides an
   account id and `"me"`. The name is looked up among active users; a name that
   matches several people is an error listing them by name and account id, and
