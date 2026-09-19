@@ -1479,6 +1479,9 @@ class TestGetChangelog:
         assert message_fragment in str(exc_info.value)
 
 
+_SYNTHETIC_ATTACHMENT_SIZE = 4096
+
+
 def _synthetic_attachment(attachment_id: str, filename: str = "diagnostics.log") -> dict[str, Any]:
     return {
         "self": f"{BASE_URL}/rest/api/3/attachment/{attachment_id}",
@@ -1491,7 +1494,7 @@ def _synthetic_attachment(attachment_id: str, filename: str = "diagnostics.log")
             "active": True,
         },
         "created": "2025-08-26T09:55:40.906-0400",
-        "size": 4096,
+        "size": _SYNTHETIC_ATTACHMENT_SIZE,
         "mimeType": "text/plain",
         "content": f"{BASE_URL}/rest/api/3/attachment/content/{attachment_id}",
         "thumbnail": f"{BASE_URL}/rest/api/3/attachment/thumbnail/{attachment_id}",
@@ -1611,6 +1614,10 @@ def _attachment_download_handler(
     """
     if metadata is None:
         metadata = _synthetic_attachment("80001")
+    if metadata.get("size") == _SYNTHETIC_ATTACHMENT_SIZE:
+        # The client checks the bytes it received against the reported size, so
+        # a download that is not about size reports the size of what it serves.
+        metadata = {**metadata, "size": len(content_bytes)}
     attachment_id = str(metadata["id"])
     metadata_path = f"/rest/api/3/attachment/{attachment_id}"
     content_path = f"/rest/api/3/attachment/content/{attachment_id}"
@@ -1666,7 +1673,7 @@ class TestDownloadAttachment:
         assert result.attachment_id == "80001"
         assert result.filename == "diagnostics.log"
         assert result.mime_type == "text/plain"
-        assert result.size == 4096
+        assert result.size == len(b"synthetic attachment bytes")
         assert result.local_path == str(expected_path)
         assert expected_path.read_bytes() == b"synthetic attachment bytes"
         assert not expected_path.with_name("diagnostics.log.part").exists()
@@ -1891,6 +1898,121 @@ class TestDownloadAttachment:
         result = await client.download_attachment("80001")
 
         assert result.attachment_id == "80001"
+
+
+class _ChunkedStream(httpx2.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):  # type: ignore[override]
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _streaming_download_handler(
+    chunks: list[bytes], *, reported_size: int
+) -> tuple[Handler, list[httpx2.Request]]:
+    metadata = {**_synthetic_attachment("80001"), "size": reported_size}
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path == "/rest/api/3/attachment/80001":
+            return httpx2.Response(200, json=metadata)
+        return httpx2.Response(200, stream=_ChunkedStream(chunks))
+
+    return handler, seen
+
+
+class TestDownloadAttachmentSize:
+    async def test_an_oversized_attachment_is_refused_without_fetching_it(
+        self, tmp_path: Path
+    ) -> None:
+        metadata = {**_synthetic_attachment("80001"), "size": jira._MAX_ATTACHMENT_BYTES + 1}
+        handler, seen = _attachment_download_handler(metadata=metadata)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraValidationError, match="over 50 MB") as exc_info:
+            await client.download_attachment("80001")
+
+        assert str(jira._MAX_ATTACHMENT_BYTES + 1) in str(exc_info.value)
+        assert [r.url.path for r in seen] == ["/rest/api/3/attachment/80001"]
+        assert list(tmp_path.rglob("*")) == []
+
+    async def test_an_attachment_exactly_at_the_limit_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "_MAX_ATTACHMENT_BYTES", 10)
+        handler, _ = _streaming_download_handler([b"0123456789"], reported_size=10)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert Path(result.local_path).read_bytes() == b"0123456789"
+
+    async def test_a_body_past_the_limit_is_cut_off_even_if_the_size_was_understated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jira, "_MAX_ATTACHMENT_BYTES", 10)
+        handler, _ = _streaming_download_handler([b"01234", b"56789", b"X"], reported_size=5)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraValidationError, match="over 50 MB"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_a_body_that_differs_from_the_reported_size_is_an_error(
+        self, tmp_path: Path
+    ) -> None:
+        handler, _ = _streaming_download_handler([b"short"], reported_size=4096)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError, match="5 bytes.*4096 bytes"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_a_body_larger_than_the_reported_size_is_an_error(self, tmp_path: Path) -> None:
+        handler, _ = _streaming_download_handler([b"abcdef"], reported_size=3)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        with pytest.raises(errors.JiraServerError, match="6 bytes.*3 bytes"):
+            await client.download_attachment("80001")
+
+        assert list((tmp_path / "80001").glob("*")) == []
+
+    async def test_chunks_are_buffered_into_few_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chunk = b"z" * 65536
+        chunks = [chunk] * 48  # 3 MiB
+        writes: list[int] = []
+        real_open = jira._open_binary_for_write
+
+        class _CountingFile:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def write(self, data: bytes) -> int:
+                writes.append(len(data))
+                return self._inner.write(data)
+
+            def close(self) -> None:
+                self._inner.close()
+
+        monkeypatch.setattr(jira, "_open_binary_for_write", lambda p: _CountingFile(real_open(p)))
+        handler, _ = _streaming_download_handler(chunks, reported_size=len(chunk) * 48)
+        client = _make_client(handler, cache_dir=tmp_path)
+
+        result = await client.download_attachment("80001")
+
+        assert Path(result.local_path).read_bytes() == chunk * 48
+        assert sum(writes) == len(chunk) * 48
+        assert len(writes) == 3
 
 
 def _router(routes: dict[tuple[str, str], httpx2.Response]) -> tuple[Handler, list[httpx2.Request]]:
@@ -2963,7 +3085,7 @@ class TestOAuthGateway:
         assert seen == []
 
     async def test_download_fetches_content_through_the_gateway(self, tmp_path: Path) -> None:
-        metadata = _synthetic_attachment("80001")
+        metadata = {**_synthetic_attachment("80001"), "size": len(b"gateway bytes")}
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:

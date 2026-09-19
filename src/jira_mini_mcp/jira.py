@@ -132,6 +132,15 @@ HTTP_TIMEOUT = httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
 # Without it three 30 s attempts plus backoff (or a long Retry-After) run ~90-150 s.
 _REQUEST_BUDGET = 45.0
 
+# An attachment is buffered to disk in full and handed to the agent as a local
+# file, so a runaway one would fill the temp directory; refuse it up front and,
+# in case Jira's reported size is wrong, while streaming.
+_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+# Chunks from the network are small; coalescing them keeps the number of
+# worker-thread hops per download low.
+_WRITE_BUFFER_BYTES = 1024 * 1024
+
 # Waits before the second and third attempt. A table rather than computed
 # backoff: three attempts is the whole policy, and a table cannot grow a
 # branch no test reaches. No jitter -- one process issues these
@@ -250,6 +259,13 @@ def _validate_attachment_id(attachment_id: str) -> None:
             "as get_attachments returns it.",
             operation="download_attachment",
         )
+
+
+def _attachment_too_large(size: int) -> errors.JiraValidationError:
+    return errors.JiraValidationError(
+        f"download_attachment refuses attachments over 50 MB; this one is {size} bytes.",
+        operation="download_attachment",
+    )
 
 
 def _issue_segment(issue_key: str, *, operation: str) -> str:
@@ -999,6 +1015,9 @@ class JiraClient:
         assert isinstance(size, int)
         assert isinstance(content_url, str)
 
+        if size > _MAX_ATTACHMENT_BYTES:
+            raise _attachment_too_large(size)
+
         try:
             sanitized_filename = _sanitize_attachment_filename(filename)
         except ValueError as exc:
@@ -1041,12 +1060,29 @@ class JiraClient:
                         response, operation="download_attachment", auth_hint=self._auth_hint
                     )
 
+                written = 0
+                buffer = bytearray()
                 fh = await asyncio.to_thread(_open_binary_for_write, part_path)
                 try:
                     async for chunk in response.aiter_bytes():
-                        await asyncio.to_thread(fh.write, chunk)
+                        written += len(chunk)
+                        if written > _MAX_ATTACHMENT_BYTES:
+                            raise _attachment_too_large(written)
+                        buffer += chunk
+                        if len(buffer) >= _WRITE_BUFFER_BYTES:
+                            await asyncio.to_thread(fh.write, bytes(buffer))
+                            buffer.clear()
+                    if buffer:
+                        await asyncio.to_thread(fh.write, bytes(buffer))
                 finally:
                     await asyncio.to_thread(fh.close)
+
+                if written != size:
+                    raise errors.JiraServerError(
+                        f"Jira sent {written} bytes for an attachment it reported as "
+                        f"{size} bytes; retry the download.",
+                        operation="download_attachment",
+                    )
         except httpx2.TimeoutException as exc:
             await _remove_part_file(part_path)
             raise errors.JiraTimeoutError(

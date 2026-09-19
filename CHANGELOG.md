@@ -9,6 +9,9 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `download_attachment` refuses attachments over 50 MB and checks that the
+  bytes received match the size Jira reported, failing with an error and leaving
+  no file when they do not.
 - One tool call, retries included, now finishes within 45 seconds. When Jira
   stays slow, unavailable, or asks for a longer `Retry-After`, the call fails
   with the usual specific error instead of running past the MCP host's own
