@@ -7,6 +7,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-19
+
 ### Changed
 
 - `download_attachment` refuses attachments over 50 MB and checks that the
@@ -135,7 +137,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation straight from GitHub with `uvx`, and a `jira-mini-mcp` console
   entry point serving over stdio.
 
-[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/proprock/jira-mini-mcp/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/proprock/jira-mini-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.3...v1.0.0
 [0.9.3]: https://github.com/proprock/jira-mini-mcp/compare/v0.9.2...v0.9.3
