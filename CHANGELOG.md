@@ -7,6 +7,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `update_issue` accepts an email or a display name as `assignee`, besides an
+  account id and `"me"`. The name is looked up among active users; a name that
+  matches several people is an error listing them by name and account id, and
+  an email is never shown in a message.
+
 ## [1.2.0] - 2026-09-19
 
 ### Changed

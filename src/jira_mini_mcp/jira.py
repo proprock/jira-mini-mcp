@@ -34,6 +34,8 @@ from jira_mini_mcp.models import (
     Transition,
     TransitionResult,
     UpdateResult,
+    User,
+    compact_user,
     markdown_to_adf,
     normalize_attachment,
     normalize_changelog_entry,
@@ -114,6 +116,17 @@ CHANGELOG_PAGE_SIZE = 100
 # the fields object, so using it as a sentinel yields an empty fields object and
 # keeps explicit fields=[] from fetching and discarding the full field set.
 _GET_ISSUE_EMPTY_FIELDS_SENTINEL = "id"
+
+# What an accountId looks like: the 24-character legacy id (observed hex, though
+# older ids also carry other letters), `<digits>:<uuid>`, and the `qm:` form of
+# some managed accounts. Such a value is used as is; anything else is looked up.
+_ACCOUNT_ID_PATTERN = re.compile(
+    r"[0-9a-z]{24}|[0-9]+:[0-9a-f-]{36}|qm:[A-Za-z0-9:_-]+", re.IGNORECASE
+)
+
+# How many users to ask Jira for, and how many to show when nobody matches.
+_USER_SEARCH_LIMIT = 20
+_MAX_LISTED_USERS = 10
 
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -412,6 +425,10 @@ def _ambiguous_transition_error(
         operation="transition_issue",
         issue_key=issue_key,
     )
+
+
+def _user_list(users: list[User]) -> str:
+    return "; ".join(f"{user.display_name} ({user.account_id})" for user in users)
 
 
 def _transition_list(transitions: list[Transition]) -> str:
@@ -1372,10 +1389,7 @@ class JiraClient:
         if name == "assignee":
             if value is None:
                 return None
-            account_id = _required_update_string(name, value, issue_key)
-            if account_id.strip().casefold() == "me":
-                account_id = await self._current_account_id(issue_key)
-            return {"accountId": account_id}
+            return {"accountId": await self._resolve_assignee(value, issue_key)}
 
         if name == "description":
             if value is None:
@@ -1420,6 +1434,80 @@ class JiraClient:
         # Unknown and customfield_* values are the caller's own Jira JSON,
         # exactly as the read side keeps them.
         return value
+
+    async def _resolve_assignee(self, value: Any, issue_key: str) -> str:
+        """Turn an assignee value into an account id.
+
+        `"me"` is the configured account, an id-shaped value is used as is,
+        and anything else is an email or display name looked up among active
+        Atlassian accounts. A lookup that is not conclusive lists the
+        candidates rather than guessing; the email itself is matched against
+        but never shown.
+        """
+        text = _required_update_string("assignee", value, issue_key)
+        if text.strip().casefold() == "me":
+            return await self._current_account_id(issue_key)
+        if _ACCOUNT_ID_PATTERN.fullmatch(text):
+            return text
+
+        query = text.strip()
+        body = await self._get(
+            "/rest/api/3/user/search",
+            operation="update_issue (resolving 'assignee')",
+            issue_key=issue_key,
+            params={"query": query, "maxResults": _USER_SEARCH_LIMIT},
+        )
+        if not isinstance(body, list):
+            raise errors.JiraServerError(
+                "Jira returned an unexpected response shape for the user search behind "
+                "update_issue 'assignee'.",
+                operation="update_issue",
+                issue_key=issue_key,
+            )
+
+        # Apps and deactivated accounts cannot hold an assignment, so they are
+        # not candidates however well their name matches.
+        candidates: list[tuple[User, str | None]] = []
+        for raw in body:
+            if (
+                isinstance(raw, dict)
+                and raw.get("accountType") == "atlassian"
+                and raw.get("active") is True
+                and isinstance(raw.get("accountId"), str)
+                and isinstance(raw.get("displayName"), str)
+            ):
+                email = raw.get("emailAddress")
+                candidates.append((compact_user(raw), email if isinstance(email, str) else None))
+
+        # An email typed by the caller is as private as one Jira returns, so it
+        # is never echoed back into a message.
+        shown = "that email" if "@" in query else f"'{query}'"
+        wanted = query.casefold()
+        exact = [
+            user
+            for user, email in candidates
+            if user.display_name.casefold() == wanted
+            or (email is not None and email.casefold() == wanted)
+        ]
+        if len(exact) == 1:
+            return exact[0].account_id
+        if len(exact) > 1:
+            raise errors.JiraValidationError(
+                f"{shown[0].upper()}{shown[1:]} matches more than one user: "
+                f"{_user_list(exact)}. Pass the account id.",
+                operation="update_issue",
+                issue_key=issue_key,
+            )
+        # Jira hides many accounts' emails yet still finds them by it, so a
+        # lone hit for an email-shaped query is that person.
+        if "@" in query and len(candidates) == 1:
+            return candidates[0][0].account_id
+
+        message = f"No active user matches {shown}."
+        if candidates:
+            listed = [user for user, _ in candidates[:_MAX_LISTED_USERS]]
+            message += f" Closest candidates: {_user_list(listed)}. Pass the account id."
+        raise errors.JiraValidationError(message, operation="update_issue", issue_key=issue_key)
 
     async def _current_account_id(self, issue_key: str) -> str:
         """The configured account's own id, fetched once per process.

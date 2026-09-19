@@ -490,8 +490,9 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
         update_issue,
         (
             "Set issue fields, taking the same values get_issue returns: summary "
-            "as text, description as Markdown, assignee as an account id or the "
-            'literal "me", labels as a list, components and priority by name, '
+            "as text, description as Markdown, assignee as an account id, an email, "
+            'a display name, or the literal "me" (an ambiguous name is an error '
+            "listing the candidates), labels as a list, components and priority by name, "
             "duedate as YYYY-MM-DD, parent as an issue key, and any "
             "customfield_* or unknown field as raw Jira JSON. null clears "
             "assignee, description, priority, parent, or duedate. labels and "

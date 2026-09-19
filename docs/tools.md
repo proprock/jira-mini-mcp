@@ -178,7 +178,10 @@ get_issue(issue_key="PROJ-123", fields=["labels"])
 update_issue(issue_key="PROJ-123", fields={"assignee": "me", "labels": ["backend", "needs-review"]})
 ```
 
-`assignee` accepts `"me"`. `description` takes Markdown, which is converted to
+`assignee` accepts `"me"`, an account id, or a colleague's email or display name,
+which is looked up among active users. An ambiguous name is an error listing the
+candidates as `Name (accountId)`, never a guess; emails are matched but never
+shown. `description` takes Markdown, which is converted to
 Jira rich text.
 
 **Same prompts, no write access.** With `READ_ONLY_MODE=true` the server

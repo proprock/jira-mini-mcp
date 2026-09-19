@@ -203,8 +203,8 @@ Three things are worth knowing before an agent writes:
   is why there is no separate `get_transitions` tool.
 - **`update_issue` replaces `labels` and `components` wholesale.** There is no
   add or remove verb, so read the issue first if you mean to add one value. It
-  takes the same values `get_issue` returns: `assignee` as an account id or the
-  literal `"me"`, `description` as Markdown, `customfield_*` as raw Jira JSON.
+  takes the same values `get_issue` returns: `assignee` as an account id, an
+  email, a display name, or the literal `"me"`, `description` as Markdown, `customfield_*` as raw Jira JSON.
   It refuses `status` and `comment`, naming the tool that does each.
 - **Markdown is converted, not guessed at.** Headings, lists, fenced code,
   inline marks, and links become Jira rich text; anything outside that set stays
