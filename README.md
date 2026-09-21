@@ -5,6 +5,7 @@
 A Jira Cloud MCP server for coding agents: 6 read tools, 9 with writes enabled.
 
 [![CI](https://github.com/proprock/jira-mini-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/proprock/jira-mini-mcp/actions/workflows/ci.yml)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/proprock/jira-mini-mcp?variant=verified)](https://m8ven.ai/mcp/proprock/jira-mini-mcp)
 [![Release](https://img.shields.io/github/v/release/proprock/jira-mini-mcp)](https://github.com/proprock/jira-mini-mcp/releases)
 [![PyPI Version](https://img.shields.io/pypi/v/jira-mini-mcp)](https://pypi.org/project/jira-mini-mcp/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
